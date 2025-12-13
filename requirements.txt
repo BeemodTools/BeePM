@@ -1,0 +1,5 @@
+click>=8.1.0
+requests>=2.31.0
+configparser>=6.0.0
+srctools>=2.0.0
+
