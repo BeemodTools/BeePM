@@ -1,0 +1,673 @@
+"""Install packages from BeePM registry"""
+
+import os
+import json
+import re
+import zipfile
+import tempfile
+import shutil
+from pathlib import Path
+from typing import Dict, Any, Optional, List, Tuple, Set
+from collections import defaultdict
+
+import click
+import requests
+import boto3
+from botocore.exceptions import ClientError
+from packaging import version as pkg_version
+from packaging.specifiers import SpecifierSet
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, DownloadColumn, TransferSpeedColumn
+from rich.console import Console
+from dotenv import load_dotenv, find_dotenv
+
+# Load environment variables from .env file
+# Try to find .env in current directory, parent directories, or project root
+dotenv_path = find_dotenv(usecwd=True)
+if dotenv_path:
+    load_dotenv(dotenv_path)
+else:
+    # Try loading from current directory
+    load_dotenv()
+
+console = Console()
+
+
+def get_beepm_paths():
+    """Get BeePM directory paths"""
+    appdata = Path(os.environ.get("APPDATA", ""))
+    beepm_root = appdata / "beepm"
+    
+    return {
+        "root": beepm_root,
+        "packages": beepm_root / "packages",
+        "config": beepm_root / "config",
+        "config_file": beepm_root / "config" / "beepm_config.json",
+        "installed_file": beepm_root / "config" / "installed_packages.json"
+    }
+
+
+def load_config() -> Optional[Dict[str, Any]]:
+    """Load BeePM configuration"""
+    paths = get_beepm_paths()
+    
+    if not paths['config_file'].exists():
+        return None
+    
+    try:
+        with open(paths['config_file'], 'r') as f:
+            return json.load(f)
+    except (json.JSONDecodeError, IOError):
+        return None
+
+
+def load_installed_packages() -> Dict[str, Any]:
+    """Load list of installed packages"""
+    paths = get_beepm_paths()
+    
+    if not paths['installed_file'].exists():
+        return {"packages": {}}
+    
+    try:
+        with open(paths['installed_file'], 'r') as f:
+            return json.load(f)
+    except (json.JSONDecodeError, IOError):
+        return {"packages": {}}
+
+
+def save_installed_packages(installed: Dict[str, Any]) -> None:
+    """Save installed packages list"""
+    paths = get_beepm_paths()
+    paths['config'].mkdir(parents=True, exist_ok=True)
+    
+    with open(paths['installed_file'], 'w') as f:
+        json.dump(installed, f, indent=2)
+
+
+def fetch_registry() -> Dict[str, Any]:
+    """Fetch current registry from R2"""
+    registry_url = os.environ.get('BEEPM_REGISTRY_URL', 'https://r2.beepm.com/registry.json')
+    
+    try:
+        response = requests.get(registry_url, timeout=30)
+        
+        # If registry doesn't exist (404), return empty
+        if response.status_code == 404:
+            raise click.ClickException(
+                f"Registry not found at {registry_url}\n"
+                "No packages available. The registry may not be set up yet."
+            )
+        
+        response.raise_for_status()
+        
+        # Handle empty response
+        if not response.content or len(response.content.strip()) == 0:
+            raise click.ClickException("Registry is empty. No packages available.")
+        
+        return response.json()
+    except (json.JSONDecodeError, ValueError) as e:
+        # Show what was actually returned
+        content_preview = response.content[:200].decode('utf-8', errors='ignore') if response.content else "(empty)"
+        raise click.ClickException(
+            f"Registry is corrupted (invalid JSON)\n"
+            f"URL: {registry_url}\n"
+            f"Status: {response.status_code}\n"
+            f"Content preview: {content_preview}"
+        )
+    except requests.RequestException as e:
+        raise click.ClickException(f"Failed to fetch registry from {registry_url}: {e}")
+
+
+def parse_package_identifier(package_spec: str) -> Tuple[Optional[str], str, Optional[str]]:
+    """Parse package identifier into (author, package_name, version)
+    
+    Formats:
+    - packagename -> (None, packagename, None)
+    - author@packagename -> (author, packagename, None)
+    - author@packagename@version -> (author, packagename, version)
+    """
+    parts = package_spec.split('@')
+    
+    if len(parts) == 1:
+        # Just package name
+        return (None, parts[0].lower(), None)
+    elif len(parts) == 2:
+        # author@package
+        return (parts[0].lower(), parts[1].lower(), None)
+    elif len(parts) == 3:
+        # author@package@version
+        return (parts[0].lower(), parts[1].lower(), parts[2])
+    else:
+        raise click.ClickException(f"Invalid package format: {package_spec}")
+
+
+def find_package_in_registry(registry: Dict[str, Any], author: Optional[str], package_name: str) -> Tuple[str, str, str]:
+    """Find package in registry
+    
+    Returns: (package_id, author, display_name)
+    """
+    by_name = registry.get('packages', {}).get('by_name', {})
+    by_id = registry.get('packages', {}).get('by_id', {})
+    
+    if author:
+        # Exact lookup
+        key = f"{author}@{package_name}"
+        if key not in by_name:
+            raise click.ClickException(f"Package not found: {key}")
+        
+        # Get package ID from by_name, then lookup full data in by_id
+        package_id = by_name[key]
+        if package_id not in by_id:
+            raise click.ClickException(f"Registry corrupted: package {package_id} not found in by_id index")
+        
+        pkg = by_id[package_id]
+        return (package_id, pkg['author'], pkg['display_name'])
+    else:
+        # Search for packages with this name
+        matches = []
+        for key, package_id in by_name.items():
+            # key format: "author@packagename"
+            if key.split('@')[1] == package_name:
+                if package_id in by_id:
+                    matches.append((key, package_id))
+        
+        if len(matches) == 0:
+            raise click.ClickException(f"Package not found: {package_name}")
+        elif len(matches) > 1:
+            click.echo(click.style(f"Multiple packages found with name '{package_name}':", fg="yellow", bold=True))
+            for key, _ in matches:
+                click.echo(f"  - {key}")
+            raise click.ClickException("Please specify author: author@packagename")
+        
+        # Single match
+        package_id = matches[0][1]
+        pkg = by_id[package_id]
+        return (package_id, pkg['author'], pkg['display_name'])
+
+
+def check_version_compatibility(version_spec: Any, user_version: str) -> bool:
+    """Check if a version is compatible with user's BEE2 version
+    
+    version_spec can be:
+    - Array of versions: ["2.4.40", "2.4.41"]
+    - Semver range string: ">=2.4.40"
+    """
+    try:
+        user_ver = pkg_version.parse(user_version)
+    except Exception:
+        # If can't parse, assume incompatible
+        return False
+    
+    if isinstance(version_spec, list):
+        # Array format - check if user version is in list
+        for v in version_spec:
+            try:
+                if pkg_version.parse(v) == user_ver:
+                    return True
+            except Exception:
+                continue
+        return False
+    elif isinstance(version_spec, str):
+        # Semver range format
+        try:
+            spec = SpecifierSet(version_spec)
+            return user_ver in spec
+        except Exception:
+            return False
+    else:
+        return False
+
+
+def resolve_version(registry: Dict[str, Any], package_id: str, author: str, 
+                   user_version: str, requested_version: Optional[str] = None) -> Optional[str]:
+    """Resolve the best version for a package
+    
+    Returns: version string or None if no compatible version
+    """
+    by_id = registry.get('packages', {}).get('by_id', {})
+    
+    if package_id not in by_id:
+        return None
+    
+    package = by_id[package_id]
+    versions = package.get('versions', {})
+    
+    if requested_version:
+        # User requested specific version
+        if requested_version not in versions:
+            return None
+        
+        # Check if it's compatible
+        version_data = versions[requested_version]
+        if check_version_compatibility(version_data.get('compatibleWith'), user_version):
+            return requested_version
+        else:
+            return None
+    else:
+        # Find highest compatible version
+        compatible_versions = []
+        
+        for ver, ver_data in versions.items():
+            if check_version_compatibility(ver_data.get('compatibleWith'), user_version):
+                try:
+                    compatible_versions.append(pkg_version.parse(ver))
+                except Exception:
+                    continue
+        
+        if not compatible_versions:
+            return None
+        
+        # Return highest version
+        highest = max(compatible_versions)
+        return str(highest)
+
+
+class DependencyResolver:
+    """Resolve package dependencies with conflict detection"""
+    
+    def __init__(self, registry: Dict[str, Any], user_version: str):
+        self.registry = registry
+        self.user_version = user_version
+        self.resolved: Dict[str, str] = {}  # package_id -> version
+        self.resolution_path: Set[str] = set()  # For circular dependency detection
+    
+    def resolve(self, package_id: str, author: str, requested_version: Optional[str] = None,
+                required_by: Optional[str] = None) -> Dict[str, Tuple[str, str, str]]:
+        """Resolve dependencies recursively
+        
+        Returns: {package_id: (version, author, display_name)}
+        """
+        # Check circular dependency
+        if package_id in self.resolution_path:
+            raise click.ClickException(
+                f"Circular dependency detected: {package_id} is already being resolved"
+            )
+        
+        # Check if already resolved
+        if package_id in self.resolved:
+            if requested_version and self.resolved[package_id] != requested_version:
+                raise click.ClickException(
+                    f"Version conflict for {package_id}: "
+                    f"requires both {self.resolved[package_id]} and {requested_version}"
+                )
+            return {}
+        
+        # Resolve version for this package
+        version = resolve_version(self.registry, package_id, author, self.user_version, requested_version)
+        
+        if not version:
+            if requested_version:
+                raise click.ClickException(
+                    f"Package {package_id}@{requested_version} not found or not compatible with BEE2 {self.user_version}"
+                )
+            else:
+                raise click.ClickException(
+                    f"No compatible version of {package_id} found for BEE2 {self.user_version}"
+                )
+        
+        # Mark as resolved
+        self.resolved[package_id] = version
+        self.resolution_path.add(package_id)
+        
+        # Get package info
+        by_id = self.registry.get('packages', {}).get('by_id', {})
+        package = by_id[package_id]
+        display_name = package.get('display_name', package_id)
+        
+        result = {
+            package_id: (version, author, display_name)
+        }
+        
+        # Resolve dependencies
+        version_data = package['versions'][version]
+        dependencies = version_data.get('dependencies', {})
+        
+        for dep_spec, dep_version_range in dependencies.items():
+            # Parse dependency spec: @author/PACKAGE_ID
+            match = re.match(r'^@([^/]+)/(.+)$', dep_spec)
+            if not match:
+                raise click.ClickException(f"Invalid dependency format: {dep_spec}")
+            
+            dep_author, dep_package_id = match.groups()
+            
+            # Parse version range
+            dep_requested_version = None
+            if dep_version_range and dep_version_range != "*":
+                # For now, extract exact version from simple specs like "^1.0.0" or "1.0.0"
+                # More complex: use packaging.specifiers to find compatible versions
+                pass  # We'll resolve the best compatible version
+            
+            # Recursively resolve
+            dep_results = self.resolve(dep_package_id, dep_author, dep_requested_version, 
+                                      required_by=package_id)
+            result.update(dep_results)
+        
+        # Remove from resolution path (we're done with this branch)
+        self.resolution_path.discard(package_id)
+        
+        return result
+
+
+def get_r2_client():
+    """Get boto3 S3 client configured for Cloudflare R2"""
+    access_key = os.environ.get('R2_ACCESS_KEY_ID')
+    secret_key = os.environ.get('R2_SECRET_ACCESS_KEY')
+    endpoint = os.environ.get('R2_ENDPOINT_URL')
+    
+    if not all([access_key, secret_key, endpoint]):
+        raise click.ClickException(
+            "R2 credentials not configured. Set R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, and R2_ENDPOINT_URL"
+        )
+    
+    return boto3.client(
+        's3',
+        endpoint_url=endpoint,
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
+        region_name='auto'
+    )
+
+
+def download_package(client, bucket: str, package_path: str, package_id: str, version: str) -> Path:
+    """Download package from R2 to temp directory
+    
+    Returns: Path to downloaded .bee_pack file
+    """
+    # Build S3 key
+    s3_key = f"{package_path.lstrip('/')}package.bee_pack"
+    
+    # Create temp file
+    temp_dir = Path(tempfile.gettempdir())
+    temp_file = temp_dir / f"{package_id}_{version}.bee_pack"
+    
+    try:
+        # Get file size for progress bar
+        response = client.head_object(Bucket=bucket, Key=s3_key)
+        file_size = response['ContentLength']
+        
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            DownloadColumn(),
+            TransferSpeedColumn(),
+        ) as progress:
+            task = progress.add_task(f"Downloading {package_id}@{version}...", total=file_size)
+            
+            def callback(bytes_transferred):
+                progress.update(task, completed=bytes_transferred)
+            
+            client.download_file(
+                bucket,
+                s3_key,
+                str(temp_file),
+                Callback=callback
+            )
+        
+        return temp_file
+        
+    except ClientError as e:
+        error_code = e.response.get('Error', {}).get('Code', '')
+        if error_code == '404' or error_code == 'NoSuchKey':
+            raise click.ClickException(f"Package file not found in registry: {package_id}@{version}")
+        else:
+            raise click.ClickException(f"Failed to download {package_id}: {e}")
+
+
+def install_package(bee_pack_path: Path, package_id: str, author: str) -> None:
+    """Extract and install package to packages directory"""
+    paths = get_beepm_paths()
+    install_dir = paths['packages'] / f"{author}_{package_id}"
+    
+    # Remove existing installation
+    if install_dir.exists():
+        shutil.rmtree(install_dir)
+    
+    # Create directory
+    install_dir.mkdir(parents=True, exist_ok=True)
+    
+    try:
+        # Extract archive
+        with zipfile.ZipFile(bee_pack_path, 'r') as zip_ref:
+            zip_ref.extractall(install_dir)
+        
+        # Verify bee-package.json exists
+        bee_package_file = install_dir / "bee-package.json"
+        if not bee_package_file.exists():
+            raise click.ClickException(f"Invalid package: bee-package.json not found")
+        
+        # Verify package ID matches
+        with open(bee_package_file, 'r', encoding='utf-8') as f:
+            package_data = json.load(f)
+        
+        if package_data.get('id') != package_id:
+            raise click.ClickException(
+                f"Package ID mismatch: expected {package_id}, got {package_data.get('id')}"
+            )
+        
+    except zipfile.BadZipFile:
+        raise click.ClickException(f"Corrupted package file: {bee_pack_path}")
+    except Exception as e:
+        # Clean up on error
+        if install_dir.exists():
+            shutil.rmtree(install_dir)
+        raise
+
+
+def update_installed_tracking(packages_to_install: Dict[str, Tuple[str, str, str]], 
+                              main_package_id: str) -> None:
+    """Update installed_packages.json with newly installed packages"""
+    installed = load_installed_packages()
+    
+    if 'packages' not in installed:
+        installed['packages'] = {}
+    
+    for package_id, (version, author, display_name) in packages_to_install.items():
+        is_dependency = (package_id != main_package_id)
+        
+        # Get package name (lowercase version of display name)
+        package_name = display_name.lower().replace(' ', '')
+        
+        if package_id in installed['packages']:
+            # Update existing
+            pkg = installed['packages'][package_id]
+            pkg['version'] = version
+            
+            # If it was a dependency but now explicitly installed, update
+            if not is_dependency:
+                pkg['installed_as_dependency'] = False
+            
+            # Update required_by if it's a dependency
+            if is_dependency and main_package_id not in pkg.get('required_by', []):
+                if 'required_by' not in pkg:
+                    pkg['required_by'] = []
+                pkg['required_by'].append(main_package_id)
+        else:
+            # Add new entry
+            installed['packages'][package_id] = {
+                'version': version,
+                'author': author,
+                'name': package_name,
+                'display_name': display_name,
+                'installed_as_dependency': is_dependency,
+                'required_by': [main_package_id] if is_dependency else []
+            }
+    
+    save_installed_packages(installed)
+
+
+@click.command()
+@click.argument('package_spec')
+@click.option('--force', is_flag=True, help='Force reinstall even if already installed')
+def install(package_spec: str, force: bool):
+    """Install a package from BeePM registry
+    
+    PACKAGE_SPEC can be:
+    - packagename (searches for package)
+    - author@packagename (specific author)
+    - author@packagename@version (specific version)
+    
+    Examples:
+      beepm install mypackage
+      beepm install author@mypackage
+      beepm install author@mypackage@1.0.0
+    """
+    click.echo(click.style("\n📦 BeePM Install", fg="cyan", bold=True))
+    click.echo()
+    
+    # Load config to get BEE2 version
+    config = load_config()
+    if not config:
+        click.echo(click.style("❌ BeePM not initialized", fg="red", bold=True))
+        click.echo("\nPlease run 'beepm init' first to set up BeePM")
+        raise click.Abort()
+    
+    user_version = config.get('beemod_version')
+    if not user_version:
+        click.echo(click.style("❌ BEE2 version not found in config", fg="red", bold=True))
+        click.echo("\nPlease run 'beepm init' to configure your BEE2 installation")
+        raise click.Abort()
+    
+    click.echo(f"BEE2 Version: {user_version}")
+    click.echo()
+    
+    # Parse package identifier
+    try:
+        author, package_name, requested_version = parse_package_identifier(package_spec)
+    except click.ClickException as e:
+        click.echo(click.style(f"❌ {e.format_message()}", fg="red", bold=True))
+        raise click.Abort()
+    
+    # Fetch registry
+    click.echo("Fetching registry...")
+    try:
+        registry = fetch_registry()
+        click.echo(click.style("✓ Registry fetched", fg="green"))
+    except click.ClickException as e:
+        click.echo(click.style(f"❌ {e.format_message()}", fg="red", bold=True))
+        raise click.Abort()
+    
+    # Find package in registry
+    click.echo()
+    click.echo(f"Looking up package: {package_spec}...")
+    try:
+        package_id, resolved_author, display_name = find_package_in_registry(
+            registry, author, package_name
+        )
+        click.echo(click.style(f"✓ Found: {display_name} (@{resolved_author}/{package_id})", fg="green"))
+    except click.ClickException as e:
+        click.echo(click.style(f"❌ {e.format_message()}", fg="red", bold=True))
+        raise click.Abort()
+    
+    # Check if already installed
+    installed = load_installed_packages()
+    already_installed = package_id in installed.get('packages', {})
+    
+    if already_installed and not force:
+        installed_version = installed['packages'][package_id]['version']
+        
+        # Check if it's the version we want
+        if not requested_version or installed_version == requested_version:
+            click.echo()
+            click.echo(click.style(
+                f"✓ {display_name}@{installed_version} is already installed",
+                fg="green",
+                bold=True
+            ))
+            click.echo("Use --force to reinstall")
+            return
+    
+    # Resolve version and dependencies
+    click.echo()
+    click.echo("Resolving dependencies...")
+    
+    try:
+        resolver = DependencyResolver(registry, user_version)
+        packages_to_install = resolver.resolve(package_id, resolved_author, requested_version)
+        
+        # Add main package to results
+        resolved_version = resolver.resolved[package_id]
+        packages_to_install[package_id] = (resolved_version, resolved_author, display_name)
+        
+        click.echo(click.style(f"✓ Resolved {len(packages_to_install)} package(s)", fg="green"))
+        
+    except click.ClickException as e:
+        click.echo(click.style(f"❌ {e.format_message()}", fg="red", bold=True))
+        raise click.Abort()
+    
+    # Show install plan
+    click.echo()
+    click.echo(click.style("Install plan:", fg="cyan", bold=True))
+    for pkg_id, (ver, auth, disp_name) in packages_to_install.items():
+        is_main = (pkg_id == package_id)
+        prefix = "  → " if is_main else "    "
+        label = "" if is_main else "(dependency)"
+        click.echo(f"{prefix}{disp_name}@{ver} {label}")
+    
+    click.echo()
+    
+    # Get R2 client
+    try:
+        r2_client = get_r2_client()
+        bucket = os.environ.get('R2_BUCKET_NAME', 'beepm')
+    except click.ClickException as e:
+        click.echo(click.style(f"❌ {e.format_message()}", fg="red", bold=True))
+        raise click.Abort()
+    
+    # Download and install packages
+    downloaded_files = []
+    
+    try:
+        # Download all packages
+        for pkg_id, (ver, auth, disp_name) in packages_to_install.items():
+            # Get package path from registry
+            by_id = registry['packages']['by_id']
+            pkg_path = by_id[pkg_id]['versions'][ver]['path']
+            
+            # Download
+            temp_file = download_package(r2_client, bucket, pkg_path, pkg_id, ver)
+            downloaded_files.append((temp_file, pkg_id, auth, ver, disp_name))
+            click.echo(click.style(f"✓ Downloaded {disp_name}@{ver}", fg="green"))
+        
+        click.echo()
+        click.echo("Installing packages...")
+        
+        # Install all packages
+        for temp_file, pkg_id, auth, ver, disp_name in downloaded_files:
+            install_package(temp_file, pkg_id, auth)
+            click.echo(click.style(f"✓ Installed {disp_name}@{ver}", fg="green"))
+        
+        # Update tracking
+        update_installed_tracking(packages_to_install, package_id)
+        
+        # Clean up temp files
+        for temp_file, *_ in downloaded_files:
+            if temp_file.exists():
+                temp_file.unlink()
+        
+        # Success!
+        click.echo()
+        click.echo(click.style("🎉 Installation complete!", fg="green", bold=True))
+        click.echo()
+        click.echo(f"Installed {len(packages_to_install)} package(s):")
+        for pkg_id, (ver, auth, disp_name) in packages_to_install.items():
+            click.echo(f"  ✓ {disp_name}@{ver}")
+        click.echo()
+        
+    except click.ClickException:
+        # Clean up temp files on error
+        for temp_file, *_ in downloaded_files:
+            if temp_file.exists():
+                temp_file.unlink()
+        raise
+    except Exception as e:
+        # Clean up temp files on error
+        for temp_file, *_ in downloaded_files:
+            if temp_file.exists():
+                temp_file.unlink()
+        click.echo(click.style(f"❌ Installation failed: {e}", fg="red", bold=True))
+        raise click.Abort()
+
+
+if __name__ == "__main__":
+    install()
+

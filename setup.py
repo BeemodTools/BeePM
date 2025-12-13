@@ -10,6 +10,12 @@ setup(
         "requests>=2.31.0",
         "configparser>=6.0.0",
         "srctools>=2.0.0",
+        "boto3>=1.26.0",
+        "openai>=1.0.0",
+        "rich>=13.0.0",
+        "semver>=3.0.0",
+        "python-dotenv>=1.0.0",
+        "packaging>=23.0",
     ],
     entry_points={
         "console_scripts": [

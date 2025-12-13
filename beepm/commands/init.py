@@ -543,9 +543,18 @@ def download_base_packages(packages_dir, selected_version):
 
 def create_beepm_config(config_file, bee2_version, packages_path):
     """Create beepm_config.json with configuration"""
+    # Extract clean version number (remove 'v' prefix and limit to 3 parts)
+    version_tag = bee2_version["tag"].replace('v', '').replace('V', '')
+    version_parts = version_tag.split('.')
+    if len(version_parts) > 3:
+        clean_version = '.'.join(version_parts[:3])
+    else:
+        clean_version = version_tag
+    
     config = {
         "bee2_version": bee2_version["tag"],
         "bee2_version_name": bee2_version["name"],
+        "beemod_version": clean_version,  # This is what install command looks for
         "package_directory": str(packages_path),
         "installed_packages": []
     }
