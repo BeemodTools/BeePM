@@ -18,6 +18,7 @@ from packaging import version as pkg_version
 from packaging.specifiers import SpecifierSet
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, DownloadColumn, TransferSpeedColumn
 from rich.console import Console
+from rich.table import Table
 from dotenv import load_dotenv, find_dotenv
 
 # Load environment variables from .env file
@@ -30,6 +31,219 @@ else:
     load_dotenv()
 
 console = Console()
+
+
+def parse_requirements_file(file_path: str) -> List[str]:
+    """Parse a requirements file and return list of package specs
+    
+    Supports:
+    - Simple package names: author@package
+    - Version pinning: author@package@1.0.0
+    - Comments: # This is a comment
+    - Blank lines
+    """
+    packages = []
+    
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            for line_num, line in enumerate(f, 1):
+                # Remove comments and whitespace
+                line = line.split('#')[0].strip()
+                
+                # Skip empty lines
+                if not line:
+                    continue
+                
+                packages.append(line)
+        
+        return packages
+    except IOError as e:
+        raise click.ClickException(f"Failed to read requirements file: {e}")
+
+
+def install_from_requirements(requirements_file: str, force: bool) -> None:
+    """Install all packages from a requirements file"""
+    click.echo(click.style(f"📄 Installing from: {requirements_file}", fg="cyan", bold=True))
+    click.echo()
+    
+    # Parse requirements file
+    try:
+        packages = parse_requirements_file(requirements_file)
+    except click.ClickException as e:
+        click.echo(click.style(f"❌ {e.format_message()}", fg="red", bold=True))
+        raise click.Abort()
+    
+    if not packages:
+        click.echo(click.style("❌ No packages found in requirements file", fg="yellow"))
+        return
+    
+    click.echo(click.style(f"Found {len(packages)} package(s) to install:", fg="cyan"))
+    for pkg in packages:
+        click.echo(f"  • {pkg}")
+    click.echo()
+    
+    # Install each package
+    installed_count = 0
+    failed_packages = []
+    
+    for i, package_spec in enumerate(packages, 1):
+        click.echo(click.style(f"\n[{i}/{len(packages)}] Installing {package_spec}...", fg="cyan", bold=True))
+        click.echo()
+        
+        try:
+            # Use the main install logic for each package
+            install_single_package(package_spec, force)
+            installed_count += 1
+        except (click.ClickException, click.Abort) as e:
+            click.echo(click.style(f"✗ Failed to install {package_spec}", fg="red"))
+            failed_packages.append(package_spec)
+            # Continue with next package instead of aborting
+            continue
+    
+    # Summary
+    click.echo()
+    click.echo(click.style("=" * 60, fg="cyan"))
+    click.echo(click.style("Installation Summary", fg="cyan", bold=True))
+    click.echo(click.style("=" * 60, fg="cyan"))
+    click.echo()
+    
+    if installed_count > 0:
+        click.echo(click.style(f"✓ Successfully installed: {installed_count}/{len(packages)} packages", fg="green", bold=True))
+    
+    if failed_packages:
+        click.echo(click.style(f"✗ Failed to install: {len(failed_packages)} package(s)", fg="red", bold=True))
+        click.echo("\nFailed packages:")
+        for pkg in failed_packages:
+            click.echo(f"  • {pkg}")
+    
+    click.echo()
+    
+    if failed_packages:
+        raise click.Abort()
+
+
+def install_single_package(package_spec: str, force: bool) -> None:
+    """Install a single package (extracted from main install function)"""
+    # Load config to get BEE2 version
+    config = load_config()
+    if not config:
+        raise click.ClickException("BeePM not initialized. Please run 'beepm init' first.")
+    
+    user_version = config.get('beemod_version')
+    if not user_version:
+        raise click.ClickException("BEE2 version not found in config. Please run 'beepm init'.")
+    
+    click.echo(f"BEE2 Version: {user_version}")
+    click.echo()
+    
+    # Parse package identifier
+    author, package_name, requested_version = parse_package_identifier(package_spec)
+    
+    # Fetch registry
+    click.echo("Fetching registry...")
+    registry = fetch_registry()
+    click.echo(click.style("✓ Registry fetched", fg="green"))
+    
+    # Find package in registry
+    click.echo()
+    click.echo(f"Looking up package: {package_spec}...")
+    package_id, resolved_author, display_name = find_package_in_registry(
+        registry, author, package_name
+    )
+    click.echo(click.style(f"✓ Found: {display_name} (@{resolved_author}/{package_id})", fg="green"))
+    
+    # Check if already installed
+    installed = load_installed_packages()
+    already_installed = package_id in installed.get('packages', {})
+    
+    if already_installed and not force:
+        installed_version = installed['packages'][package_id]['version']
+        
+        # Check if it's the version we want
+        if not requested_version or installed_version == requested_version:
+            click.echo()
+            click.echo(click.style(
+                f"✓ {display_name}@{installed_version} is already installed",
+                fg="green",
+                bold=True
+            ))
+            click.echo("Use --force to reinstall")
+            return
+    
+    # Resolve version and dependencies
+    click.echo()
+    click.echo("Resolving dependencies...")
+    
+    resolver = DependencyResolver(registry, user_version)
+    packages_to_install = resolver.resolve(package_id, resolved_author, requested_version)
+    
+    # Add main package to results
+    resolved_version = resolver.resolved[package_id]
+    packages_to_install[package_id] = (resolved_version, resolved_author, display_name)
+    
+    click.echo(click.style(f"✓ Resolved {len(packages_to_install)} package(s)", fg="green"))
+    
+    # Show install plan
+    click.echo()
+    click.echo(click.style("Install plan:", fg="cyan", bold=True))
+    for pkg_id, (ver, auth, disp_name) in packages_to_install.items():
+        is_main = (pkg_id == package_id)
+        prefix = "  → " if is_main else "    "
+        label = "" if is_main else "(dependency)"
+        click.echo(f"{prefix}{disp_name}@{ver} {label}")
+    
+    click.echo()
+    
+    # Get R2 client
+    r2_client = get_r2_client()
+    bucket = os.environ.get('R2_BUCKET_NAME', 'beepm')
+    
+    # Download and install packages
+    downloaded_files = []
+    
+    try:
+        # Download all packages
+        for pkg_id, (ver, auth, disp_name) in packages_to_install.items():
+            # Get package path from registry
+            by_id = registry['packages']['by_id']
+            pkg_path = by_id[pkg_id]['versions'][ver]['path']
+            
+            # Download
+            temp_file = download_package(r2_client, bucket, pkg_path, pkg_id, ver)
+            downloaded_files.append((temp_file, pkg_id, auth, ver, disp_name))
+            click.echo(click.style(f"✓ Downloaded {disp_name}@{ver}", fg="green"))
+        
+        click.echo()
+        click.echo("Installing packages...")
+        
+        # Install all packages
+        for temp_file, pkg_id, auth, ver, disp_name in downloaded_files:
+            install_package(temp_file, pkg_id, auth)
+            click.echo(click.style(f"✓ Installed {disp_name}@{ver}", fg="green"))
+        
+        # Update tracking
+        update_installed_tracking(packages_to_install, package_id)
+        
+        # Clean up temp files
+        for temp_file, *_ in downloaded_files:
+            if temp_file.exists():
+                temp_file.unlink()
+        
+        # Success!
+        click.echo()
+        click.echo(click.style("🎉 Installation complete!", fg="green", bold=True))
+        click.echo()
+        click.echo(f"Installed {len(packages_to_install)} package(s):")
+        for pkg_id, (ver, auth, disp_name) in packages_to_install.items():
+            click.echo(f"  ✓ {disp_name}@{ver}")
+        click.echo()
+        
+    except Exception as e:
+        # Clean up temp files on error
+        for temp_file, *_ in downloaded_files:
+            if temp_file.exists():
+                temp_file.unlink()
+        raise
 
 
 def get_beepm_paths():
@@ -218,7 +432,8 @@ def check_version_compatibility(version_spec: Any, user_version: str) -> bool:
 
 
 def resolve_version(registry: Dict[str, Any], package_id: str, author: str, 
-                   user_version: str, requested_version: Optional[str] = None) -> Optional[str]:
+                   user_version: str, requested_version: Optional[str] = None, 
+                   allow_yanked: bool = False) -> Optional[str]:
     """Resolve the best version for a package
     
     Returns: version string or None if no compatible version
@@ -238,15 +453,24 @@ def resolve_version(registry: Dict[str, Any], package_id: str, author: str,
         
         # Check if it's compatible
         version_data = versions[requested_version]
+        
+        # Check if yanked
+        if version_data.get('yanked', False) and not allow_yanked:
+            return None
+        
         if check_version_compatibility(version_data.get('compatibleWith'), user_version):
             return requested_version
         else:
             return None
     else:
-        # Find highest compatible version
+        # Find highest compatible version (excluding yanked)
         compatible_versions = []
         
         for ver, ver_data in versions.items():
+            # Skip yanked versions unless explicitly allowed
+            if ver_data.get('yanked', False) and not allow_yanked:
+                continue
+            
             if check_version_compatibility(ver_data.get('compatibleWith'), user_version):
                 try:
                     compatible_versions.append(pkg_version.parse(ver))
@@ -291,8 +515,22 @@ class DependencyResolver:
                 )
             return {}
         
-        # Resolve version for this package
-        version = resolve_version(self.registry, package_id, author, self.user_version, requested_version)
+        # Resolve version for this package (allow yanked if explicitly requested)
+        allow_yanked = (requested_version is not None)
+        version = resolve_version(self.registry, package_id, author, self.user_version, requested_version, allow_yanked)
+        
+        # Check if the resolved version is yanked
+        if version:
+            by_id = self.registry.get('packages', {}).get('by_id', {})
+            if package_id in by_id:
+                version_data = by_id[package_id]['versions'].get(version, {})
+                if version_data.get('yanked', False):
+                    yank_reason = version_data.get('yank_reason', 'No reason provided')
+                    raise click.ClickException(
+                        f"Version {version} of {package_id} has been yanked (disabled)\n"
+                        f"Reason: {yank_reason}\n"
+                        f"Use --force to install anyway (not recommended)"
+                    )
         
         if not version:
             if requested_version:
@@ -387,14 +625,18 @@ def download_package(client, bucket: str, package_path: str, package_id: str, ve
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
+            BarColumn(complete_style="green", finished_style="green"),
             DownloadColumn(),
             TransferSpeedColumn(),
         ) as progress:
             task = progress.add_task(f"Downloading {package_id}@{version}...", total=file_size)
             
+            # Track total bytes for accurate completion
+            total_downloaded = [0]
+            
             def callback(bytes_transferred):
-                progress.update(task, completed=bytes_transferred)
+                total_downloaded[0] += bytes_transferred
+                progress.update(task, completed=total_downloaded[0])
             
             client.download_file(
                 bucket,
@@ -402,6 +644,9 @@ def download_package(client, bucket: str, package_path: str, package_id: str, ve
                 str(temp_file),
                 Callback=callback
             )
+            
+            # Ensure progress shows 100% complete
+            progress.update(task, completed=file_size)
         
         return temp_file
         
@@ -496,9 +741,10 @@ def update_installed_tracking(packages_to_install: Dict[str, Tuple[str, str, str
 
 
 @click.command()
-@click.argument('package_spec')
+@click.argument('package_spec', required=False)
 @click.option('--force', is_flag=True, help='Force reinstall even if already installed')
-def install(package_spec: str, force: bool):
+@click.option('-r', '--requirements', 'requirements_file', type=click.Path(exists=True), help='Install from requirements file')
+def install(package_spec: Optional[str], force: bool, requirements_file: Optional[str]):
     """Install a package from BeePM registry
     
     PACKAGE_SPEC can be:
@@ -506,164 +752,37 @@ def install(package_spec: str, force: bool):
     - author@packagename (specific author)
     - author@packagename@version (specific version)
     
+    Or install from a requirements file:
+    - beepm install -r requirements.txt
+    
     Examples:
       beepm install mypackage
       beepm install author@mypackage
       beepm install author@mypackage@1.0.0
+      beepm install -r requirements.txt
     """
     click.echo(click.style("\n📦 BeePM Install", fg="cyan", bold=True))
     click.echo()
     
-    # Load config to get BEE2 version
-    config = load_config()
-    if not config:
-        click.echo(click.style("❌ BeePM not initialized", fg="red", bold=True))
-        click.echo("\nPlease run 'beepm init' first to set up BeePM")
+    # Handle requirements file
+    if requirements_file:
+        return install_from_requirements(requirements_file, force)
+    
+    # Require package_spec if not using requirements file
+    if not package_spec:
+        click.echo(click.style("❌ Error: Please specify a package or use -r for requirements file", fg="red", bold=True))
+        click.echo("\nUsage:")
+        click.echo("  beepm install <package>")
+        click.echo("  beepm install -r requirements.txt")
         raise click.Abort()
     
-    user_version = config.get('beemod_version')
-    if not user_version:
-        click.echo(click.style("❌ BEE2 version not found in config", fg="red", bold=True))
-        click.echo("\nPlease run 'beepm init' to configure your BEE2 installation")
-        raise click.Abort()
-    
-    click.echo(f"BEE2 Version: {user_version}")
-    click.echo()
-    
-    # Parse package identifier
+    # Install single package
     try:
-        author, package_name, requested_version = parse_package_identifier(package_spec)
+        install_single_package(package_spec, force)
     except click.ClickException as e:
         click.echo(click.style(f"❌ {e.format_message()}", fg="red", bold=True))
         raise click.Abort()
-    
-    # Fetch registry
-    click.echo("Fetching registry...")
-    try:
-        registry = fetch_registry()
-        click.echo(click.style("✓ Registry fetched", fg="green"))
-    except click.ClickException as e:
-        click.echo(click.style(f"❌ {e.format_message()}", fg="red", bold=True))
-        raise click.Abort()
-    
-    # Find package in registry
-    click.echo()
-    click.echo(f"Looking up package: {package_spec}...")
-    try:
-        package_id, resolved_author, display_name = find_package_in_registry(
-            registry, author, package_name
-        )
-        click.echo(click.style(f"✓ Found: {display_name} (@{resolved_author}/{package_id})", fg="green"))
-    except click.ClickException as e:
-        click.echo(click.style(f"❌ {e.format_message()}", fg="red", bold=True))
-        raise click.Abort()
-    
-    # Check if already installed
-    installed = load_installed_packages()
-    already_installed = package_id in installed.get('packages', {})
-    
-    if already_installed and not force:
-        installed_version = installed['packages'][package_id]['version']
-        
-        # Check if it's the version we want
-        if not requested_version or installed_version == requested_version:
-            click.echo()
-            click.echo(click.style(
-                f"✓ {display_name}@{installed_version} is already installed",
-                fg="green",
-                bold=True
-            ))
-            click.echo("Use --force to reinstall")
-            return
-    
-    # Resolve version and dependencies
-    click.echo()
-    click.echo("Resolving dependencies...")
-    
-    try:
-        resolver = DependencyResolver(registry, user_version)
-        packages_to_install = resolver.resolve(package_id, resolved_author, requested_version)
-        
-        # Add main package to results
-        resolved_version = resolver.resolved[package_id]
-        packages_to_install[package_id] = (resolved_version, resolved_author, display_name)
-        
-        click.echo(click.style(f"✓ Resolved {len(packages_to_install)} package(s)", fg="green"))
-        
-    except click.ClickException as e:
-        click.echo(click.style(f"❌ {e.format_message()}", fg="red", bold=True))
-        raise click.Abort()
-    
-    # Show install plan
-    click.echo()
-    click.echo(click.style("Install plan:", fg="cyan", bold=True))
-    for pkg_id, (ver, auth, disp_name) in packages_to_install.items():
-        is_main = (pkg_id == package_id)
-        prefix = "  → " if is_main else "    "
-        label = "" if is_main else "(dependency)"
-        click.echo(f"{prefix}{disp_name}@{ver} {label}")
-    
-    click.echo()
-    
-    # Get R2 client
-    try:
-        r2_client = get_r2_client()
-        bucket = os.environ.get('R2_BUCKET_NAME', 'beepm')
-    except click.ClickException as e:
-        click.echo(click.style(f"❌ {e.format_message()}", fg="red", bold=True))
-        raise click.Abort()
-    
-    # Download and install packages
-    downloaded_files = []
-    
-    try:
-        # Download all packages
-        for pkg_id, (ver, auth, disp_name) in packages_to_install.items():
-            # Get package path from registry
-            by_id = registry['packages']['by_id']
-            pkg_path = by_id[pkg_id]['versions'][ver]['path']
-            
-            # Download
-            temp_file = download_package(r2_client, bucket, pkg_path, pkg_id, ver)
-            downloaded_files.append((temp_file, pkg_id, auth, ver, disp_name))
-            click.echo(click.style(f"✓ Downloaded {disp_name}@{ver}", fg="green"))
-        
-        click.echo()
-        click.echo("Installing packages...")
-        
-        # Install all packages
-        for temp_file, pkg_id, auth, ver, disp_name in downloaded_files:
-            install_package(temp_file, pkg_id, auth)
-            click.echo(click.style(f"✓ Installed {disp_name}@{ver}", fg="green"))
-        
-        # Update tracking
-        update_installed_tracking(packages_to_install, package_id)
-        
-        # Clean up temp files
-        for temp_file, *_ in downloaded_files:
-            if temp_file.exists():
-                temp_file.unlink()
-        
-        # Success!
-        click.echo()
-        click.echo(click.style("🎉 Installation complete!", fg="green", bold=True))
-        click.echo()
-        click.echo(f"Installed {len(packages_to_install)} package(s):")
-        for pkg_id, (ver, auth, disp_name) in packages_to_install.items():
-            click.echo(f"  ✓ {disp_name}@{ver}")
-        click.echo()
-        
-    except click.ClickException:
-        # Clean up temp files on error
-        for temp_file, *_ in downloaded_files:
-            if temp_file.exists():
-                temp_file.unlink()
-        raise
     except Exception as e:
-        # Clean up temp files on error
-        for temp_file, *_ in downloaded_files:
-            if temp_file.exists():
-                temp_file.unlink()
         click.echo(click.style(f"❌ Installation failed: {e}", fg="red", bold=True))
         raise click.Abort()
 

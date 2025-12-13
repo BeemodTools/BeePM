@@ -8,4 +8,5 @@ rich>=13.0.0
 semver>=3.0.0
 python-dotenv>=1.0.0
 packaging>=23.0
+pyinstaller>=5.0.0
 

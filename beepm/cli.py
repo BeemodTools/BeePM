@@ -2,11 +2,14 @@
 
 import click
 from beepm.commands.init import init
-from beepm.commands.uninit import uninit
+from beepm.commands.uninit import unhook
 from beepm.commands.login import login
 from beepm.commands.publish import publish
 from beepm.commands.install import install
+from beepm.commands.uninstall import uninstall
+from beepm.commands.update import update
 from beepm.commands.nuke import nuke
+from beepm.commands.yank import yank
 from beepm.commands.list import list_packages
 from beepm.commands.info import info
 from beepm.commands.search import search
@@ -26,11 +29,14 @@ def cli():
 
 # Register commands
 cli.add_command(init)
-cli.add_command(uninit)
+cli.add_command(unhook)
 cli.add_command(login)
 cli.add_command(publish)
 cli.add_command(install)
+cli.add_command(uninstall)
+cli.add_command(update)
 cli.add_command(nuke)
+cli.add_command(yank)
 cli.add_command(list_packages)
 cli.add_command(info)
 cli.add_command(search)

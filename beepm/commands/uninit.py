@@ -11,8 +11,8 @@ from beepm.commands.init import get_appdata_path, get_beepm_paths
 
 @click.command()
 @click.option('--keep-packages', is_flag=True, help='Keep the packages directory')
-def uninit(keep_packages):
-    """Uninstall BeePM and restore BEE2 configuration"""
+def unhook(keep_packages):
+    """Unhook BeePM from BEE2 and restore original configuration"""
     
     # Header
     click.echo()

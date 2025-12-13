@@ -159,6 +159,7 @@ def info(package_spec: str):
         for version, version_data in sorted_versions:
             compatible = version_data.get('compatibleWith', 'Unknown')
             dependencies = version_data.get('dependencies', {})
+            is_yanked = version_data.get('yanked', False)
             
             # Format compatible with
             if isinstance(compatible, list):
@@ -173,7 +174,10 @@ def info(package_spec: str):
             else:
                 dep_str = "None"
             
-            table.add_row(version, compatible_str, dep_str)
+            # Add yanked indicator
+            version_display = f"{version} [red](yanked)[/red]" if is_yanked else version
+            
+            table.add_row(version_display, compatible_str, dep_str)
         
         console.print(table)
     
@@ -181,6 +185,8 @@ def info(package_spec: str):
     if versions:
         latest_version = sorted(versions.keys(), reverse=True)[0]
         latest_data = versions[latest_version]
+        is_yanked = latest_data.get('yanked', False)
+        yank_reason = latest_data.get('yank_reason', 'No reason provided')
         dependencies = latest_data.get('dependencies', {})
         
         if dependencies:
@@ -192,6 +198,13 @@ def info(package_spec: str):
                 tree.add(f"{dep_spec} ({version_range})")
             
             console.print(tree)
+        
+        # Show yank warning if latest is yanked
+        if is_yanked:
+            click.echo()
+            console.print(f"[bold red]⚠️  Version {latest_version} is yanked (disabled)[/bold red]")
+            console.print(f"[yellow]Reason: {yank_reason}[/yellow]")
+            console.print("[dim]This version cannot be installed (use --force to override)[/dim]")
     
     click.echo()
 

@@ -205,11 +205,18 @@ def extract_and_validate_package(bee_pack_path: Path, username: str) -> tuple[Di
             "(must contain only letters, numbers, hyphens, and underscores)"
         )
     
-    # Validate author matches GitHub username
+    # Validate author matches GitHub username (unless you're Areng14 - admin override)
     if package_data['author'] != username:
-        raise click.ClickException(
-            f"Author field '{package_data['author']}' must match your GitHub username '{username}'"
-        )
+        if username == "Areng14":
+            # Admin override - Areng14 can publish for anyone
+            click.echo(click.style(
+                f"⚠️  Admin override: Publishing as '{package_data['author']}' (you are {username})",
+                fg="yellow"
+            ))
+        else:
+            raise click.ClickException(
+                f"Author field '{package_data['author']}' must match your GitHub username '{username}'"
+            )
     
     # Validate version
     if not validate_semver(package_data['version']):
@@ -465,13 +472,17 @@ def upload_to_r2(client, bucket: str, bee_pack_path: Path, author: str, package_
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
+        BarColumn(complete_style="green", finished_style="green"),
         TaskProgressColumn(),
     ) as progress:
         task = progress.add_task(f"Uploading to R2...", total=file_size)
         
+        # Track total bytes for accurate completion
+        total_uploaded = [0]
+        
         def callback(bytes_transferred):
-            progress.update(task, completed=bytes_transferred)
+            total_uploaded[0] += bytes_transferred
+            progress.update(task, completed=total_uploaded[0])
         
         try:
             client.upload_file(
@@ -480,6 +491,9 @@ def upload_to_r2(client, bucket: str, bee_pack_path: Path, author: str, package_
                 s3_key,
                 Callback=callback
             )
+            
+            # Ensure progress shows 100% complete
+            progress.update(task, completed=file_size)
         except ClientError as e:
             raise click.ClickException(f"R2 upload failed: {e}")
     
