@@ -10,10 +10,15 @@ First, list all the packages BeePM has. To do this use `beepm list`
 
 This is a example output
 ┏━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━━━━━━┳━━━━━━━━━━┓
+
 ┃ Package                ┃ Author  ┃ Latest Version ┃ Versions ┃
+
 ┡━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━━━━━━╇━━━━━━━━━━┩
+
 │ ArengsPackages         │ Areng14 │ 1.0.0          │ 1        │
+
 │ Areng14@arengspackages │         │                │          │
+
 └────────────────────────┴─────────┴────────────────┴──────────┘
 
 To install ArengsPackages, use the command `beepm install Areng14@arengspackages` OR `beepm install arengspackages`
@@ -23,10 +28,15 @@ First, list all the packages BeePM has installed. To do this use `beepm list --i
 
 This is a example output
 ┏━━━━━━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━┓
+
 ┃ Package         ┃ Author  ┃ Version ┃ Type     ┃
+
 ┡━━━━━━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━┩
+
 │ ArengsPackages  │ Areng14 │ 1.0.0   │ Explicit │
+
 │ ARENGS_PACKAGES │         │         │          │
+
 └─────────────────┴─────────┴─────────┴──────────┘
 
 To install ArengsPackages, use the command `beepm uninstall Areng14@arengspackages` OR `beepm uninstall arengspackages`
@@ -36,12 +46,21 @@ To unhook beepm from beemod, use the command `beepm unhook` to unhook BeePM from
 
 ## List of commands
 beepm init               # Setup BeePM
-beepm unhook             # Unhook from BEE2 (was: uninit)
+
+beepm unhook             # Unhook from BEE2
+
 beepm login              # GitHub OAuth
+
 beepm publish <file>     # Publish package
+
 beepm install <pkg>      # Install package
+
 beepm uninstall <pkg>    # Uninstall package
+
 beepm update --all       # Update packages
+
 beepm list               # List packages
+
 beepm info <pkg>         # Package details
+
 beepm search <query>     # Search packages
