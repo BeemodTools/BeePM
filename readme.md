@@ -8,36 +8,10 @@ Run the command `beepm init` to install Beemod Package Manager
 ## Installing a package
 First, list all the packages BeePM has. To do this use `beepm list`
 
-This is a example output
-┏━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━━━━━━┳━━━━━━━━━━┓
-
-┃ Package                ┃ Author  ┃ Latest Version ┃ Versions ┃
-
-┡━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━━━━━━╇━━━━━━━━━━┩
-
-│ ArengsPackages         │ Areng14 │ 1.0.0          │ 1        │
-
-│ Areng14@arengspackages │         │                │          │
-
-└────────────────────────┴─────────┴────────────────┴──────────┘
-
 To install ArengsPackages, use the command `beepm install Areng14@arengspackages` OR `beepm install arengspackages`
 
 ## Uninstalling a package
 First, list all the packages BeePM has installed. To do this use `beepm list --installed`
-
-This is a example output
-┏━━━━━━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━┓
-
-┃ Package         ┃ Author  ┃ Version ┃ Type     ┃
-
-┡━━━━━━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━┩
-
-│ ArengsPackages  │ Areng14 │ 1.0.0   │ Explicit │
-
-│ ARENGS_PACKAGES │         │         │          │
-
-└─────────────────┴─────────┴─────────┴──────────┘
 
 To install ArengsPackages, use the command `beepm uninstall Areng14@arengspackages` OR `beepm uninstall arengspackages`
 
