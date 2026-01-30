@@ -76,13 +76,13 @@ def nuke(packages: bool, yes: bool):
       --packages  Also delete all package files (not just registry)
       --yes       Skip confirmation prompt
     """
-    click.echo(click.style("\n💣 BeePM Nuke", fg="red", bold=True))
+    click.echo(click.style("\n BeePM Nuke", fg="red", bold=True))
     click.echo()
     
     # Check authentication
     auth = load_auth()
     if not auth:
-        click.echo(click.style("❌ Not logged in", fg="red", bold=True))
+        click.echo(click.style("[X] Not logged in", fg="red", bold=True))
         click.echo("Please run 'beepm login' first")
         raise click.Abort()
     
@@ -90,21 +90,21 @@ def nuke(packages: bool, yes: bool):
     
     # Check if user is Areng14
     if username != "Areng14":
-        click.echo(click.style("❌ Access Denied", fg="red", bold=True))
+        click.echo(click.style("[X] Access Denied", fg="red", bold=True))
         click.echo(f"This command is only available to Areng14 (you are: {username})")
         raise click.Abort()
     
-    click.echo(click.style(f"✓ Authenticated as {username}", fg="green"))
+    click.echo(click.style(f"[OK] Authenticated as {username}", fg="green"))
     click.echo()
     
     # Show what will be deleted
     if packages:
-        click.echo(click.style("⚠️  WARNING: This will delete:", fg="yellow", bold=True))
-        click.echo("  • registry.json")
-        click.echo("  • ALL package files in the bucket")
+        click.echo(click.style("[!]  WARNING: This will delete:", fg="yellow", bold=True))
+        click.echo("  * registry.json")
+        click.echo("  * ALL package files in the bucket")
     else:
-        click.echo(click.style("⚠️  WARNING: This will delete:", fg="yellow", bold=True))
-        click.echo("  • registry.json")
+        click.echo(click.style("[!]  WARNING: This will delete:", fg="yellow", bold=True))
+        click.echo("  * registry.json")
         click.echo("  (packages will remain in storage)")
     
     click.echo()
@@ -120,7 +120,7 @@ def nuke(packages: bool, yes: bool):
         r2_client = get_r2_client()
         bucket = os.environ.get('R2_BUCKET_NAME', 'beepm')
     except click.ClickException as e:
-        click.echo(click.style(f"❌ {e.format_message()}", fg="red", bold=True))
+        click.echo(click.style(f"[X] {e.format_message()}", fg="red", bold=True))
         raise click.Abort()
     
     click.echo()
@@ -130,7 +130,7 @@ def nuke(packages: bool, yes: bool):
         # Delete registry.json
         try:
             r2_client.delete_object(Bucket=bucket, Key='registry.json')
-            click.echo(click.style("✓ Deleted registry.json", fg="green"))
+            click.echo(click.style("[OK] Deleted registry.json", fg="green"))
         except ClientError as e:
             error_code = e.response.get('Error', {}).get('Code', '')
             if error_code == '404' or error_code == 'NoSuchKey':
@@ -155,13 +155,13 @@ def nuke(packages: bool, yes: bool):
                         delete_count += 1
             
             if delete_count > 0:
-                click.echo(click.style(f"✓ Deleted {delete_count} package file(s)", fg="green"))
+                click.echo(click.style(f"[OK] Deleted {delete_count} package file(s)", fg="green"))
             else:
                 click.echo(click.style("  (no package files found)", fg="yellow"))
         
         # Success!
         click.echo()
-        click.echo(click.style("💥 Nuke complete!", fg="green", bold=True))
+        click.echo(click.style(" Nuke complete!", fg="green", bold=True))
         click.echo()
         click.echo("The registry has been wiped clean.")
         if packages:
@@ -169,10 +169,10 @@ def nuke(packages: bool, yes: bool):
         click.echo()
         
     except ClientError as e:
-        click.echo(click.style(f"\n❌ Failed to nuke: {e}", fg="red", bold=True))
+        click.echo(click.style(f"\n[X] Failed to nuke: {e}", fg="red", bold=True))
         raise click.Abort()
     except Exception as e:
-        click.echo(click.style(f"\n❌ Nuke failed: {e}", fg="red", bold=True))
+        click.echo(click.style(f"\n[X] Nuke failed: {e}", fg="red", bold=True))
         raise click.Abort()
 
 

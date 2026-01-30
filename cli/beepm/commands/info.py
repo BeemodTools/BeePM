@@ -104,14 +104,14 @@ def info(package_spec: str):
       beepm info mypackage
       beepm info author@mypackage
     """
-    click.echo(click.style("\n📋 Package Information", fg="cyan", bold=True))
+    click.echo(click.style("\n Package Information", fg="cyan", bold=True))
     click.echo()
     
     # Parse package spec
     try:
         author, package_name = parse_package_spec(package_spec)
     except Exception as e:
-        click.echo(click.style(f"❌ Invalid package format: {e}", fg="red", bold=True))
+        click.echo(click.style(f"[X] Invalid package format: {e}", fg="red", bold=True))
         raise click.Abort()
     
     # Fetch registry
@@ -119,9 +119,9 @@ def info(package_spec: str):
     try:
         registry = fetch_registry()
         package_id, package_data = find_package(registry, author, package_name)
-        click.echo(click.style("✓ Package found\n", fg="green"))
+        click.echo(click.style("[OK] Package found\n", fg="green"))
     except click.ClickException as e:
-        click.echo(click.style(f"❌ {e.format_message()}", fg="red", bold=True))
+        click.echo(click.style(f"[X] {e.format_message()}", fg="red", bold=True))
         raise click.Abort()
     
     # Extract data
@@ -140,7 +140,7 @@ def info(package_spec: str):
     install_cmd = f"beepm install {author_name.lower()}@{package_name_lower}"
     info_text += f"\n[bold green]Install:[/bold green] {install_cmd}"
     
-    panel = Panel(info_text, title="📦 Package Details", border_style="cyan", box=box.ROUNDED)
+    panel = Panel(info_text, title=" Package Details", border_style="cyan", box=box.ROUNDED)
     console.print(panel)
     
     # Versions table
@@ -193,7 +193,7 @@ def info(package_spec: str):
             click.echo()
             console.print(f"[bold cyan]Dependencies for v{latest_version}:[/bold cyan]")
             
-            tree = Tree("📦 Dependencies", style="cyan")
+            tree = Tree(" Dependencies", style="cyan")
             for dep_spec, version_range in dependencies.items():
                 tree.add(f"{dep_spec} ({version_range})")
             
@@ -202,7 +202,7 @@ def info(package_spec: str):
         # Show yank warning if latest is yanked
         if is_yanked:
             click.echo()
-            console.print(f"[bold red]⚠️  Version {latest_version} is yanked (disabled)[/bold red]")
+            console.print(f"[bold red][!]  Version {latest_version} is yanked (disabled)[/bold red]")
             console.print(f"[yellow]Reason: {yank_reason}[/yellow]")
             console.print("[dim]This version cannot be installed (use --force to override)[/dim]")
     

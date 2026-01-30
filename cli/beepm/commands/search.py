@@ -52,7 +52,7 @@ def search(query: str):
       beepm search cube
       beepm search areng
     """
-    click.echo(click.style(f"\n🔍 Searching for: {query}", fg="cyan", bold=True))
+    click.echo(click.style(f"\n Searching for: {query}", fg="cyan", bold=True))
     click.echo()
     
     # Fetch registry
@@ -62,7 +62,7 @@ def search(query: str):
     by_id = registry.get('packages', {}).get('by_id', {})
     
     if not by_id:
-        click.echo(click.style("\n❌ No packages available", fg="yellow"))
+        click.echo(click.style("\n[X] No packages available", fg="yellow"))
         click.echo("The registry is empty or not accessible.")
         return
     
@@ -84,10 +84,10 @@ def search(query: str):
             matches.append((package_id, package_data))
     
     if not matches:
-        click.echo(click.style(f"✗ No packages found matching '{query}'", fg="yellow"))
+        click.echo(click.style(f"[X] No packages found matching '{query}'", fg="yellow"))
         return
     
-    click.echo(click.style(f"✓ Found {len(matches)} package(s)\n", fg="green"))
+    click.echo(click.style(f"[OK] Found {len(matches)} package(s)\n", fg="green"))
     
     # Create table
     table = Table(show_header=True, header_style="bold cyan")
@@ -128,7 +128,7 @@ def search(query: str):
     console.print(table)
     
     click.echo()
-    click.echo(click.style("💡 Tip:", fg="cyan", bold=True) + " Use 'beepm info <package>' for detailed information")
+    click.echo(click.style("Tip:", fg="cyan", bold=True) + " Use 'beepm info <package>' for detailed information")
     click.echo()
 
 

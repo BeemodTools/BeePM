@@ -95,12 +95,12 @@ def get_dependents(installed: Dict[str, Any], package_id: str) -> List[Tuple[str
 
 
 def uninstall_package(package_id: str, author: str) -> None:
-    """Remove package files from packages directory"""
+    """Remove package .bee_pack file from packages directory"""
     paths = get_beepm_paths()
-    install_dir = paths['packages'] / f"{author}_{package_id}"
+    bee_pack_file = paths['packages'] / f"{author}_{package_id}.bee_pack"
     
-    if install_dir.exists():
-        shutil.rmtree(install_dir)
+    if bee_pack_file.exists():
+        bee_pack_file.unlink()
 
 
 @click.command()
@@ -120,7 +120,7 @@ def uninstall(package_spec: str, uninstall_all: bool, yes: bool):
       beepm uninstall ARENGS_PACKAGES
       beepm uninstall --all
     """
-    click.echo(click.style("\n🗑️  BeePM Uninstall", fg="cyan", bold=True))
+    click.echo(click.style("\n  BeePM Uninstall", fg="cyan", bold=True))
     click.echo()
     
     # Load installed packages
@@ -137,7 +137,7 @@ def uninstall(package_spec: str, uninstall_all: bool, yes: bool):
         for pkg_id, pkg_data in packages.items():
             display_name = pkg_data.get('display_name', pkg_id)
             version = pkg_data.get('version', 'unknown')
-            click.echo(f"  • {display_name}@{version}")
+            click.echo(f"  * {display_name}@{version}")
         
         click.echo()
         if not yes and not click.confirm(click.style("Uninstall ALL packages?", fg="red", bold=True)):
@@ -154,20 +154,20 @@ def uninstall(package_spec: str, uninstall_all: bool, yes: bool):
             
             try:
                 uninstall_package(pkg_id, author)
-                click.echo(click.style(f"✓ Uninstalled {display_name}", fg="green"))
+                click.echo(click.style(f"[OK] Uninstalled {display_name}", fg="green"))
             except Exception as e:
-                click.echo(click.style(f"✗ Failed to uninstall {display_name}: {e}", fg="red"))
+                click.echo(click.style(f"[X] Failed to uninstall {display_name}: {e}", fg="red"))
         
         # Clear installed packages list
         save_installed_packages({"packages": {}})
         
         click.echo()
-        click.echo(click.style("✓ All packages uninstalled!", fg="green", bold=True))
+        click.echo(click.style("[OK] All packages uninstalled!", fg="green", bold=True))
         return
     
     # Require package_spec if not using --all
     if not package_spec:
-        click.echo(click.style("❌ Error: Please specify a package or use --all", fg="red", bold=True))
+        click.echo(click.style("[X] Error: Please specify a package or use --all", fg="red", bold=True))
         click.echo("\nUsage:")
         click.echo("  beepm uninstall <package>")
         click.echo("  beepm uninstall --all")
@@ -177,12 +177,12 @@ def uninstall(package_spec: str, uninstall_all: bool, yes: bool):
     try:
         package_id, pkg_data = find_installed_package(installed, package_spec)
     except click.ClickException as e:
-        click.echo(click.style(f"❌ {e.format_message()}", fg="red", bold=True))
+        click.echo(click.style(f"[X] {e.format_message()}", fg="red", bold=True))
         click.echo("\nInstalled packages:")
         for pkg_id, data in packages.items():
             display_name = data.get('display_name', pkg_id)
             author = data.get('author', '')
-            click.echo(f"  • {author}@{data.get('name', '')} ({display_name})")
+            click.echo(f"  * {author}@{data.get('name', '')} ({display_name})")
         raise click.Abort()
     
     display_name = pkg_data.get('display_name', package_id)
@@ -202,10 +202,10 @@ def uninstall(package_spec: str, uninstall_all: bool, yes: bool):
     
     if dependents:
         click.echo()
-        click.echo(click.style("⚠️  Warning: Other packages depend on this!", fg="yellow", bold=True))
+        click.echo(click.style("[!]  Warning: Other packages depend on this!", fg="yellow", bold=True))
         click.echo("\nThe following packages will break:")
         for dep_id, dep_name in dependents:
-            click.echo(f"  • {dep_name}")
+            click.echo(f"  * {dep_name}")
         click.echo()
     
     # Confirm
@@ -219,9 +219,9 @@ def uninstall(package_spec: str, uninstall_all: bool, yes: bool):
     click.echo()
     try:
         uninstall_package(package_id, author)
-        click.echo(click.style(f"✓ Removed package files", fg="green"))
+        click.echo(click.style(f"[OK] Removed package files", fg="green"))
     except Exception as e:
-        click.echo(click.style(f"✗ Failed to remove files: {e}", fg="red"))
+        click.echo(click.style(f"[X] Failed to remove files: {e}", fg="red"))
         # Continue anyway to clean up metadata
     
     # Update installed packages tracking
@@ -234,14 +234,14 @@ def uninstall(package_spec: str, uninstall_all: bool, yes: bool):
             required_by.remove(package_id)
     
     save_installed_packages(installed)
-    click.echo(click.style(f"✓ Updated package registry", fg="green"))
+    click.echo(click.style(f"[OK] Updated package registry", fg="green"))
     
     click.echo()
-    click.echo(click.style(f"✓ {display_name} has been uninstalled!", fg="green", bold=True))
+    click.echo(click.style(f"[OK] {display_name} has been uninstalled!", fg="green", bold=True))
     
     if dependents:
         click.echo()
-        click.echo(click.style("⚠️  Remember: Dependent packages may be broken!", fg="yellow"))
+        click.echo(click.style("[!]  Remember: Dependent packages may be broken!", fg="yellow"))
     
     click.echo()
 

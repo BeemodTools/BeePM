@@ -86,6 +86,21 @@ def validate_package_id(package_id: str) -> bool:
     return bool(re.match(pattern, package_id))
 
 
+def generate_package_id(name: str) -> str:
+    """Generate a package ID from the name: UPPERCASE_NAME_XXXX"""
+    import secrets
+
+    # Convert name to uppercase, replace non-alphanumeric with underscores
+    base_name = re.sub(r'[^A-Z0-9]+', '_', name.upper())
+    base_name = re.sub(r'^_+|_+$', '', base_name)  # Trim leading/trailing underscores
+    base_name = re.sub(r'_+', '_', base_name)  # Collapse multiple underscores
+
+    # Generate a 4-character random suffix
+    suffix = secrets.token_hex(2).upper()
+
+    return f"{base_name}_{suffix}"
+
+
 def validate_name_format(name: str) -> bool:
     """Validate package name format (alphanumeric, hyphens, underscores only)"""
     pattern = r'^[a-zA-Z0-9_-]+$'
@@ -143,10 +158,12 @@ def extract_and_validate_package(bee_pack_path: Path, username: str) -> tuple[Di
     if not bee_pack_path.suffix == '.bee_pack':
         raise click.ClickException("Package must have .bee_pack extension")
     
-    # Check file size (50MB limit)
+    # Check file size (50MB limit, skip for Areng14)
     size_mb = bee_pack_path.stat().st_size / (1024 * 1024)
-    if size_mb > 50:
+    if size_mb > 50 and username.lower() != "areng14":
         raise click.ClickException(f"Package size ({size_mb:.1f}MB) exceeds 50MB limit")
+    elif size_mb > 50 and username.lower() == "areng14":
+        click.echo(click.style(f"[!]  Admin bypass: Package size {size_mb:.1f}MB (exceeds normal 50MB limit)", fg="yellow"))
     
     # Create temp directory
     temp_dir = Path(tempfile.mkdtemp())
@@ -170,19 +187,14 @@ def extract_and_validate_package(bee_pack_path: Path, username: str) -> tuple[Di
     except json.JSONDecodeError as e:
         raise click.ClickException(f"Invalid bee-package.json: {e}")
     
-    # Validate required fields
-    required_fields = ['id', 'name', 'author', 'version', 'compatibleWith']
+    # Validate required fields (id is optional - will be auto-generated)
+    required_fields = ['name', 'author', 'version', 'compatibleWith']
     missing = [f for f in required_fields if f not in package_data]
     if missing:
         raise click.ClickException(f"Missing required fields in bee-package.json: {', '.join(missing)}")
-    
-    # Validate package ID
-    if not validate_package_id(package_data['id']):
-        raise click.ClickException(
-            f"Invalid package ID: {package_data['id']} "
-            "(must contain only uppercase letters, numbers, and underscores)"
-        )
-    
+
+    # Note: ID will be read from info.txt later (authoritative source)
+
     # Validate name length
     name_len = len(package_data['name'])
     if name_len < 3 or name_len > 50:
@@ -210,7 +222,7 @@ def extract_and_validate_package(bee_pack_path: Path, username: str) -> tuple[Di
         if username == "Areng14":
             # Admin override - Areng14 can publish for anyone
             click.echo(click.style(
-                f"⚠️  Admin override: Publishing as '{package_data['author']}' (you are {username})",
+                f"[!]  Admin override: Publishing as '{package_data['author']}' (you are {username})",
                 fg="yellow"
             ))
         else:
@@ -240,7 +252,7 @@ def validate_files(temp_dir: Path) -> None:
     """Validate all files in package against whitelist"""
     # Whitelist of allowed extensions
     allowed_extensions = {
-        '.txt', '.vtf', '.vmt', '.mdl', '.vvd', '.vtx', '.phy',
+        '.txt', '.vtf', '.vmt', '.mdl', '.vvd', '.vtx', '.phy', '.3ds',
         '.wav', '.mp3', '.vcd', '.pcf', '.vmf', '.vmx', '.cfg', '.json',
         '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tga', '.webp', '.nut'
     }
@@ -256,26 +268,22 @@ def validate_files(temp_dir: Path) -> None:
                 )
 
 
-def validate_info_txt(temp_dir: Path, expected_id: str) -> None:
-    """Validate info.txt exists and ID matches"""
+def get_info_txt_id(temp_dir: Path) -> str:
+    """Get the ID from info.txt - this is the authoritative package ID"""
     info_path = temp_dir / "info.txt"
     if not info_path.exists():
         raise click.ClickException("info.txt not found in package")
-    
+
     try:
         with open(info_path, 'r', encoding='utf-8') as f:
             content = f.read()
-            
+
         # Look for ID field (case-insensitive)
         match = re.search(r'^\s*"ID"\s+"([^"]+)"', content, re.MULTILINE | re.IGNORECASE)
         if not match:
             raise click.ClickException("ID field not found in info.txt")
-        
-        info_id = match.group(1)
-        if info_id != expected_id:
-            raise click.ClickException(
-                f"ID mismatch: bee-package.json has '{expected_id}' but info.txt has '{info_id}'"
-            )
+
+        return match.group(1).upper()
     except IOError as e:
         raise click.ClickException(f"Failed to read info.txt: {e}")
 
@@ -505,6 +513,7 @@ def update_registry(registry: Dict[str, Any], package_data: Dict[str, Any], path
     author = package_data['author']
     package_id = package_data['id']
     name = package_data['name']
+    display_name = package_data.get('display_name', name)
     version = package_data['version']
     compatible_with = package_data['compatibleWith']
     dependencies = package_data.get('dependencies', {})
@@ -529,9 +538,12 @@ def update_registry(registry: Dict[str, Any], package_data: Dict[str, Any], path
         registry['packages']['by_id'][package_id] = {
             'author': author,
             'name': name.lower(),
-            'display_name': name,
+            'display_name': display_name,
             'versions': {}
         }
+    else:
+        # Update display_name in case it changed
+        registry['packages']['by_id'][package_id]['display_name'] = display_name
     
     registry['packages']['by_id'][package_id]['versions'][version] = version_entry
     
@@ -558,146 +570,223 @@ def upload_registry(client, bucket: str, registry: Dict[str, Any]) -> None:
         raise click.ClickException(f"Failed to update registry: {e}")
 
 
+def create_bee_pack_from_directory(directory: Path) -> Path:
+    """Create a .bee_pack file from a directory
+    
+    Returns: Path to temporary .bee_pack file
+    """
+    # Verify bee-package.json exists
+    bee_package_json = directory / "bee-package.json"
+    if not bee_package_json.exists():
+        raise click.ClickException(
+            f"bee-package.json not found in directory: {directory}\n"
+            "Make sure the directory contains a valid BEE2 package structure."
+        )
+    
+    # Create temp .bee_pack file
+    import tempfile
+    temp_file = Path(tempfile.gettempdir()) / f"{directory.name}_temp.bee_pack"
+    
+    click.echo(f"Creating .bee_pack from directory: {directory.name}")
+    
+    try:
+        with zipfile.ZipFile(temp_file, 'w', zipfile.ZIP_DEFLATED) as zip_ref:
+            file_count = 0
+            for file_path in directory.rglob('*'):
+                if file_path.is_file():
+                    arcname = file_path.relative_to(directory)
+                    zip_ref.write(file_path, arcname)
+                    file_count += 1
+        
+        click.echo(click.style(f"[OK] Created .bee_pack with {file_count} files", fg="green"))
+        return temp_file
+        
+    except Exception as e:
+        if temp_file.exists():
+            temp_file.unlink()
+        raise click.ClickException(f"Failed to create .bee_pack: {e}")
+
+
 @click.command()
 @click.argument('bee_pack_path', type=click.Path(exists=True, path_type=Path))
 def publish(bee_pack_path: Path):
     """Publish a package to BeePM registry
     
-    BEE_PACK_PATH: Path to the .bee_pack file to publish
+    BEE_PACK_PATH: Path to the .bee_pack file OR directory to publish
+    
+    If a directory is provided, it will be automatically zipped.
     
     Before publishing, make sure:
     - You are logged in (run 'beepm login')
     - Your package has a valid bee-package.json
     - All files are of allowed types
     - Package version doesn't already exist
+    
+    Examples:
+      beepm publish package.bee_pack
+      beepm publish path/to/package/directory
     """
-    click.echo(click.style("\n📦 BeePM Publish", fg="cyan", bold=True))
+    click.echo(click.style("\n BeePM Publish", fg="cyan", bold=True))
     click.echo()
     
-    # Check authentication
-    auth = load_auth()
-    if not auth:
-        click.echo(click.style("❌ Not logged in", fg="red", bold=True))
-        click.echo("Please run 'beepm login' first")
-        raise click.Abort()
+    # Check if input is a directory
+    temp_bee_pack = None
+    if bee_pack_path.is_dir():
+        try:
+            temp_bee_pack = create_bee_pack_from_directory(bee_pack_path)
+            bee_pack_path = temp_bee_pack
+            click.echo()
+        except click.ClickException:
+            raise
     
-    token = auth['token']
-    username = auth['username']
-    
-    # Verify token is still valid
-    click.echo("Verifying authentication...")
-    if not verify_token(token):
-        click.echo(click.style("❌ Token expired or invalid", fg="red", bold=True))
-        click.echo("Please run 'beepm login' again")
-        raise click.Abort()
-    
-    click.echo(click.style(f"✓ Authenticated as {username}", fg="green"))
-    
-    # Check rate limit
-    click.echo("\nChecking rate limit...")
-    within_limit, current_count = check_rate_limit(username)
-    if not within_limit:
-        click.echo(click.style(
-            f"❌ Rate limit exceeded: {current_count}/10 packages published today",
-            fg="red",
-            bold=True
-        ))
-        click.echo("Please try again tomorrow (limit resets at midnight UTC)")
-        raise click.Abort()
-    
-    click.echo(click.style(f"✓ Rate limit OK ({current_count}/10 packages today)", fg="green"))
-    
-    # Extract and validate package
-    click.echo("\nValidating package...")
     try:
-        package_data, temp_dir = extract_and_validate_package(bee_pack_path, username)
-        click.echo(click.style("✓ Package structure valid", fg="green"))
+        # Check authentication
+        auth = load_auth()
+        if not auth:
+            click.echo(click.style("[X] Not logged in", fg="red", bold=True))
+            click.echo("Please run 'beepm login' first")
+            raise click.Abort()
         
-        # Validate files
-        click.echo("Validating file types...")
-        validate_files(temp_dir)
-        click.echo(click.style("✓ All file types allowed", fg="green"))
+        token = auth['token']
+        username = auth['username']
         
-        # Validate info.txt
-        click.echo("Validating info.txt...")
-        validate_info_txt(temp_dir, package_data['id'])
-        click.echo(click.style("✓ info.txt valid", fg="green"))
+        # Verify token is still valid
+        click.echo("Verifying authentication...")
+        if not verify_token(token):
+            click.echo(click.style("[X] Token expired or invalid", fg="red", bold=True))
+            click.echo("Please run 'beepm login' again")
+            raise click.Abort()
         
-    except click.ClickException:
-        raise
-    except Exception as e:
-        raise click.ClickException(f"Validation failed: {e}")
-    
-    # Content moderation
-    click.echo("\nRunning content checks...")
-    if not check_content_moderation(package_data['author'], package_data['name']):
-        raise click.ClickException("Invalid name format")
-    click.echo(click.style("✓ Content checks passed", fg="green"))
-    
-    # Fetch registry
-    click.echo("\nFetching registry...")
-    try:
-        registry = fetch_registry()
-        click.echo(click.style("✓ Registry fetched", fg="green"))
-    except click.ClickException:
-        raise
-    
-    # Check if version exists
-    if check_version_exists(registry, package_data['author'], package_data['id'], package_data['version']):
-        raise click.ClickException(
-            f"Version {package_data['version']} of @{package_data['author']}/{package_data['id']} "
-            "already exists (versions are immutable)"
-        )
-    
-    click.echo(click.style(f"✓ Version {package_data['version']} is new", fg="green"))
-    
-    # Get R2 client
-    click.echo("\nConnecting to R2...")
-    try:
-        r2_client = get_r2_client()
-        bucket = os.environ.get('R2_BUCKET_NAME', 'beepm')
-        click.echo(click.style("✓ Connected to R2", fg="green"))
-    except click.ClickException:
-        raise
-    
-    # Upload package
-    click.echo()
-    try:
-        package_path = upload_to_r2(
-            r2_client,
-            bucket,
-            bee_pack_path,
-            package_data['author'],
-            package_data['id'],
-            package_data['version']
-        )
-        click.echo(click.style("✓ Package uploaded", fg="green"))
-    except click.ClickException:
-        raise
-    
-    # Update registry
-    click.echo("\nUpdating registry...")
-    try:
-        updated_registry = update_registry(registry, package_data, package_path)
-        upload_registry(r2_client, bucket, updated_registry)
-        click.echo(click.style("✓ Registry updated", fg="green"))
-    except click.ClickException:
-        raise
-    
-    # Increment rate limit
-    increment_rate_limit(username)
-    
-    # Success!
-    click.echo()
-    click.echo(click.style("🎉 Package published successfully!", fg="green", bold=True))
-    click.echo()
-    click.echo(f"  Package: @{package_data['author']}/{package_data['id']}")
-    click.echo(f"  Version: {package_data['version']}")
-    click.echo(f"  Name: {package_data['name']}")
-    click.echo()
-    click.echo(click.style("To install this package, run:", fg="cyan"))
-    click.echo(f"  beepm install {package_data['author']}@{package_data['name'].lower()}")
-    click.echo()
+        click.echo(click.style(f"[OK] Authenticated as {username}", fg="green"))
+        
+        # Check rate limit (skip for Areng14)
+        if username.lower() == "areng14":
+            click.echo("\nRate limit check...")
+            click.echo(click.style("[OK] Admin bypass enabled", fg="yellow"))
+        else:
+            click.echo("\nChecking rate limit...")
+            within_limit, current_count = check_rate_limit(username)
+            if not within_limit:
+                click.echo(click.style(
+                    f"[X] Rate limit exceeded: {current_count}/10 packages published today",
+                    fg="red",
+                    bold=True
+                ))
+                click.echo("Please try again tomorrow (limit resets at midnight UTC)")
+                raise click.Abort()
+            
+            click.echo(click.style(f"[OK] Rate limit OK ({current_count}/10 packages today)", fg="green"))
+        
+        # Extract and validate package
+        click.echo("\nValidating package...")
+        try:
+            package_data, temp_dir = extract_and_validate_package(bee_pack_path, username)
+            click.echo(click.style("[OK] Package structure valid", fg="green"))
+            
+            # Validate files
+            click.echo("Validating file types...")
+            validate_files(temp_dir)
+            click.echo(click.style("[OK] All file types allowed", fg="green"))
+            
+            # Get ID from info.txt (authoritative source)
+            click.echo("Reading info.txt...")
+            info_id = get_info_txt_id(temp_dir)
+            if not validate_package_id(info_id):
+                raise click.ClickException(
+                    f"Invalid package ID in info.txt: {info_id} "
+                    "(must contain only uppercase letters, numbers, and underscores)"
+                )
+            package_data['id'] = info_id
+            click.echo(click.style(f"[OK] Package ID: {info_id}", fg="green"))
+            
+        except click.ClickException:
+            raise
+        except Exception as e:
+            raise click.ClickException(f"Validation failed: {e}")
+        
+        # Content moderation (skip for Areng14)
+        if username.lower() == "areng14":
+            click.echo("\nContent checks...")
+            click.echo(click.style("[OK] Admin bypass enabled", fg="yellow"))
+        else:
+            click.echo("\nRunning content checks...")
+            if not check_content_moderation(package_data['author'], package_data['name']):
+                raise click.ClickException("Invalid name format")
+            click.echo(click.style("[OK] Content checks passed", fg="green"))
+        
+        # Fetch registry
+        click.echo("\nFetching registry...")
+        try:
+            registry = fetch_registry()
+            click.echo(click.style("[OK] Registry fetched", fg="green"))
+        except click.ClickException:
+            raise
+        
+        # Check if version exists
+        if check_version_exists(registry, package_data['author'], package_data['id'], package_data['version']):
+            raise click.ClickException(
+                f"Version {package_data['version']} of @{package_data['author']}/{package_data['id']} "
+                "already exists (versions are immutable)"
+            )
+        
+        click.echo(click.style(f"[OK] Version {package_data['version']} is new", fg="green"))
+        
+        # Get R2 client
+        click.echo("\nConnecting to R2...")
+        try:
+            r2_client = get_r2_client()
+            bucket = os.environ.get('R2_BUCKET_NAME', 'beepm')
+            click.echo(click.style("[OK] Connected to R2", fg="green"))
+        except click.ClickException:
+            raise
+        
+        # Upload package
+        click.echo()
+        try:
+            package_path = upload_to_r2(
+                r2_client,
+                bucket,
+                bee_pack_path,
+                package_data['author'],
+                package_data['id'],
+                package_data['version']
+            )
+            click.echo(click.style("[OK] Package uploaded", fg="green"))
+        except click.ClickException:
+            raise
+        
+        # Update registry
+        click.echo("\nUpdating registry...")
+        try:
+            updated_registry = update_registry(registry, package_data, package_path)
+            upload_registry(r2_client, bucket, updated_registry)
+            click.echo(click.style("[OK] Registry updated", fg="green"))
+        except click.ClickException:
+            raise
+        
+        # Increment rate limit (skip for Areng14)
+        if username.lower() != "areng14":
+            increment_rate_limit(username)
+        
+        # Success!
+        click.echo()
+        click.echo(click.style(" Package published successfully!", fg="green", bold=True))
+        click.echo()
+        click.echo(f"  Package: @{package_data['author']}/{package_data['id']}")
+        click.echo(f"  Version: {package_data['version']}")
+        click.echo(f"  Name: {package_data['name']}")
+        click.echo()
+        click.echo(click.style("To install this package, run:", fg="cyan"))
+        click.echo(f"  beepm install {package_data['author']}@{package_data['name'].lower()}")
+        click.echo()
+        
+    finally:
+        # Cleanup temp file if we created one
+        if temp_bee_pack and temp_bee_pack.exists():
+            try:
+                temp_bee_pack.unlink()
+            except:
+                pass
 
 
 if __name__ == "__main__":

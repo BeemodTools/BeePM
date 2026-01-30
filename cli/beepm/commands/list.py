@@ -82,7 +82,7 @@ def list_packages(installed: bool):
       beepm list --installed
     """
     if installed:
-        click.echo(click.style("\n📦 Installed Packages", fg="cyan", bold=True))
+        click.echo(click.style("\n Installed Packages", fg="cyan", bold=True))
         click.echo()
         
         installed_data = load_installed_packages()
@@ -122,7 +122,7 @@ def list_packages(installed: bool):
         click.echo()
         return
     
-    click.echo(click.style("\n📦 Available Packages", fg="cyan", bold=True))
+    click.echo(click.style("\n Available Packages", fg="cyan", bold=True))
     click.echo()
     
     # Fetch registry
@@ -132,50 +132,57 @@ def list_packages(installed: bool):
     by_id = registry.get('packages', {}).get('by_id', {})
     
     if not by_id:
-        click.echo(click.style("\n❌ No packages available", fg="yellow"))
+        click.echo(click.style("\n[X] No packages available", fg="yellow"))
         click.echo("The registry is empty or not accessible.")
         return
     
-    click.echo(click.style(f"✓ Found {len(by_id)} package(s)\n", fg="green"))
+    click.echo(click.style(f"[OK] Found {len(by_id)} package(s)\n", fg="green"))
     
-    # Create table
-    table = Table(show_header=True, header_style="bold cyan")
-    table.add_column("Package", style="bright_white", no_wrap=True)
-    table.add_column("Author", style="blue")
-    table.add_column("Latest Version", style="green")
-    table.add_column("Versions", style="yellow")
-    
-    # Sort packages by name
-    sorted_packages = sorted(by_id.items(), key=lambda x: x[1].get('display_name', '').lower())
-    
-    for package_id, package_data in sorted_packages:
+    # Group packages by author
+    packages_by_author = {}
+    for package_id, package_data in by_id.items():
         author = package_data.get('author', 'Unknown')
-        display_name = package_data.get('display_name', package_id)
-        versions = package_data.get('versions', {})
+        if author not in packages_by_author:
+            packages_by_author[author] = []
+        packages_by_author[author].append((package_id, package_data))
+    
+    # Sort authors alphabetically
+    sorted_authors = sorted(packages_by_author.keys())
+    
+    # Display packages grouped by author
+    for author in sorted_authors:
+        # Author header
+        click.echo(click.style(f"| {author}", fg="bright_cyan", bold=True))
         
-        if versions:
-            # Get latest version (sort by semver)
-            version_list = list(versions.keys())
-            latest_version = version_list[-1] if version_list else 'N/A'
-            version_count = len(version_list)
-        else:
-            latest_version = 'N/A'
-            version_count = 0
-        
-        # Format package name
-        package_name = f"[bold]{display_name}[/bold]\n{author}@{package_data.get('name', '')}"
-        
-        table.add_row(
-            package_name,
-            author,
-            latest_version,
-            str(version_count)
+        # Sort packages by display name within each author
+        author_packages = sorted(
+            packages_by_author[author], 
+            key=lambda x: x[1].get('display_name', '').lower()
         )
+        
+        for i, (package_id, package_data) in enumerate(author_packages):
+            display_name = package_data.get('display_name', package_id)
+            name = package_data.get('name', '')
+            versions = package_data.get('versions', {})
+            
+            if versions:
+                version_list = list(versions.keys())
+                latest_version = version_list[-1] if version_list else 'N/A'
+                version_count = len(version_list)
+            else:
+                latest_version = 'N/A'
+                version_count = 0
+            
+            # Package info - simpler format
+            click.echo(click.style("  * ", fg="bright_cyan") + 
+                      click.style(display_name, fg="bright_white", bold=True) +
+                      click.style(f" v{latest_version}", fg="green"))
+            click.echo(click.style("    ", fg="bright_cyan") + 
+                      click.style(f"beepm install {author.lower()}@{name}", fg="yellow"))
+        
+        click.echo()
     
-    console.print(table)
-    
-    click.echo()
-    click.echo(click.style("💡 Tip:", fg="cyan", bold=True) + " Use 'beepm info <package>' for detailed information")
+    click.echo(click.style("Tip:", fg="cyan", bold=True) + " Use 'beepm info <package>' for detailed information")
     click.echo()
 
 

@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls:*)",
+      "Bash(npm install)",
+      "Bash(grep:*)",
+      "Bash(npx eslint:*)",
+      "Bash(npx vite)",
+      "Bash(npm install:*)",
+      "Bash(npx electron .)",
+      "Bash(node_modules.binelectron .)",
+      "Bash(\".\\\\node_modules\\\\.bin\\\\electron.cmd\" .)",
+      "Bash(npm view:*)",
+      "Bash(findstr:*)",
+      "Bash(nvm version:*)",
+      "Bash(npm run build:*)",
+      "WebFetch(domain:pub-adc08815222c4c608465419f2d5751a5.r2.dev)"
+    ]
+  }
+}

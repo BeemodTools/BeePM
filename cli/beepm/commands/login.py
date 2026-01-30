@@ -168,7 +168,7 @@ def login():
     }
     auth_url = f"https://github.com/login/oauth/authorize?{urlencode(auth_params)}"
     
-    click.echo(click.style("\n🔐 BeePM Login", fg="cyan", bold=True))
+    click.echo(click.style("\n BeePM Login", fg="cyan", bold=True))
     click.echo("Opening your browser for GitHub authentication...\n")
     
     # Open browser
@@ -193,34 +193,34 @@ def login():
         # Check for errors
         if server.oauth_error:
             error_desc = server.oauth_error
-            click.echo(click.style(f"\n❌ Authentication cancelled: {error_desc}", fg="red", bold=True))
+            click.echo(click.style(f"\n[X] Authentication cancelled: {error_desc}", fg="red", bold=True))
             raise click.Abort()
         
         if not server.oauth_code or not server.oauth_state:
-            click.echo(click.style("\n❌ Invalid callback received", fg="red", bold=True))
+            click.echo(click.style("\n[X] Invalid callback received", fg="red", bold=True))
             raise click.Abort()
         
         # Verify state matches
         if server.oauth_state != state:
-            click.echo(click.style("\n❌ Security error: State mismatch (possible CSRF attack)", fg="red", bold=True))
+            click.echo(click.style("\n[X] Security error: State mismatch (possible CSRF attack)", fg="red", bold=True))
             raise click.Abort()
         
-        click.echo(click.style("✓ Callback received", fg="green"))
+        click.echo(click.style("[OK] Callback received", fg="green"))
         
         # Exchange code for token
         click.echo("Exchanging code for access token...")
         token = exchange_code_for_token(server.oauth_code, client_id, client_secret)
-        click.echo(click.style("✓ Access token obtained", fg="green"))
+        click.echo(click.style("[OK] Access token obtained", fg="green"))
         
         # Get GitHub username
         click.echo("Fetching GitHub username...")
         username = get_github_user(token)
         
         if not username:
-            click.echo(click.style("\n❌ Failed to retrieve GitHub username", fg="red", bold=True))
+            click.echo(click.style("\n[X] Failed to retrieve GitHub username", fg="red", bold=True))
             raise click.Abort()
         
-        click.echo(click.style(f"✓ Authenticated as: {username}", fg="green"))
+        click.echo(click.style(f"[OK] Authenticated as: {username}", fg="green"))
         
         # Save auth data
         paths = get_beepm_paths()
@@ -234,13 +234,13 @@ def login():
         with open(paths['auth_file'], 'w') as f:
             json.dump(auth_data, f, indent=2)
         
-        click.echo(click.style(f"\n✓ Login successful! Credentials saved to {paths['auth_file']}", fg="green", bold=True))
+        click.echo(click.style(f"\n[OK] Login successful! Credentials saved to {paths['auth_file']}", fg="green", bold=True))
         
     except KeyboardInterrupt:
-        click.echo(click.style("\n\n❌ Login cancelled by user", fg="yellow"))
+        click.echo(click.style("\n\n[X] Login cancelled by user", fg="yellow"))
         raise click.Abort()
     except Exception as e:
-        click.echo(click.style(f"\n❌ Login failed: {str(e)}", fg="red", bold=True))
+        click.echo(click.style(f"\n[X] Login failed: {str(e)}", fg="red", bold=True))
         raise click.Abort()
 
 

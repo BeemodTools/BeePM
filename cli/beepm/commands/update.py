@@ -73,19 +73,19 @@ def update(package_spec: str, update_all: bool, check: bool, force: bool):
       beepm update --all             # Update all packages
       beepm update areng14@package   # Update specific package
     """
-    click.echo(click.style("\n🔄 BeePM Update", fg="cyan", bold=True))
+    click.echo(click.style("\n BeePM Update", fg="cyan", bold=True))
     click.echo()
     
     # Load config
     config = load_config()
     if not config:
-        click.echo(click.style("❌ BeePM not initialized", fg="red", bold=True))
+        click.echo(click.style("[X] BeePM not initialized", fg="red", bold=True))
         click.echo("\nPlease run 'beepm init' first to set up BeePM")
         raise click.Abort()
     
     user_version = config.get('beemod_version')
     if not user_version:
-        click.echo(click.style("❌ BEE2 version not found in config", fg="red", bold=True))
+        click.echo(click.style("[X] BEE2 version not found in config", fg="red", bold=True))
         click.echo("\nPlease run 'beepm init' to configure your BEE2 installation")
         raise click.Abort()
     
@@ -103,9 +103,9 @@ def update(package_spec: str, update_all: bool, check: bool, force: bool):
     click.echo("Fetching registry...")
     try:
         registry = fetch_registry()
-        click.echo(click.style("✓ Registry fetched", fg="green"))
+        click.echo(click.style("[OK] Registry fetched", fg="green"))
     except Exception as e:
-        click.echo(click.style(f"❌ Failed to fetch registry: {e}", fg="red", bold=True))
+        click.echo(click.style(f"[X] Failed to fetch registry: {e}", fg="red", bold=True))
         raise click.Abort()
     
     # Check for updates
@@ -115,10 +115,10 @@ def update(package_spec: str, update_all: bool, check: bool, force: bool):
     
     if not updates:
         click.echo()
-        click.echo(click.style("✓ All packages are up to date!", fg="green", bold=True))
+        click.echo(click.style("[OK] All packages are up to date!", fg="green", bold=True))
         return
     
-    click.echo(click.style(f"✓ Found {len(updates)} update(s) available", fg="green"))
+    click.echo(click.style(f"[OK] Found {len(updates)} update(s) available", fg="green"))
     click.echo()
     
     # Show updates in table
@@ -151,12 +151,12 @@ def update(package_spec: str, update_all: bool, check: bool, force: bool):
     
     # If just checking, stop here
     if check:
-        click.echo(click.style("💡 Tip:", fg="cyan", bold=True) + " Run 'beepm update --all' to update all packages")
+        click.echo(click.style("Tip: Tip:", fg="cyan", bold=True) + " Run 'beepm update --all' to update all packages")
         return
     
     # Determine what to update
     if not update_all and not package_spec:
-        click.echo(click.style("ℹ️  Use --all to update all packages, or specify a package name", fg="cyan"))
+        click.echo(click.style("i  Use --all to update all packages, or specify a package name", fg="cyan"))
         return
     
     if not packages_to_update:
@@ -183,7 +183,7 @@ def update(package_spec: str, update_all: bool, check: bool, force: bool):
             install_single_package(package_spec_str, force=True)  # Force to update
             updated_count += 1
         except Exception as e:
-            click.echo(click.style(f"✗ Failed to update {package_spec_str}: {e}", fg="red"))
+            click.echo(click.style(f"[X] Failed to update {package_spec_str}: {e}", fg="red"))
             failed_packages.append(package_spec_str)
             continue
     
@@ -195,13 +195,13 @@ def update(package_spec: str, update_all: bool, check: bool, force: bool):
     click.echo()
     
     if updated_count > 0:
-        click.echo(click.style(f"✓ Successfully updated: {updated_count}/{len(packages_to_update)} package(s)", fg="green", bold=True))
+        click.echo(click.style(f"[OK] Successfully updated: {updated_count}/{len(packages_to_update)} package(s)", fg="green", bold=True))
     
     if failed_packages:
-        click.echo(click.style(f"✗ Failed to update: {len(failed_packages)} package(s)", fg="red", bold=True))
+        click.echo(click.style(f"[X] Failed to update: {len(failed_packages)} package(s)", fg="red", bold=True))
         click.echo("\nFailed packages:")
         for pkg in failed_packages:
-            click.echo(f"  • {pkg}")
+            click.echo(f"  * {pkg}")
     
     click.echo()
 

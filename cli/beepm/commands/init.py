@@ -115,12 +115,12 @@ def select_bee2_version(versions):
             click.echo(f"{page_info} | ", nl=False)
         
         click.echo(click.style("Use ", fg="white") + 
-                   click.style("↑/↓", fg="bright_green", bold=True) + 
+                   click.style("UP/DOWN", fg="bright_green", bold=True) + 
                    click.style(" to navigate", fg="white"), nl=False)
         
         if total_pages > 1:
             click.echo(click.style(", ", fg="white") + 
-                      click.style("←/→", fg="bright_green", bold=True) + 
+                      click.style("<-/->", fg="bright_green", bold=True) + 
                       click.style(" for pages", fg="white"), nl=False)
         
         click.echo(click.style(", ", fg="white") + 
@@ -568,8 +568,29 @@ def create_beepm_config(config_file, bee2_version, packages_path):
 
 
 @click.command()
-def init():
-    """Initialize BeePM configuration and install base packages"""
+@click.option('--version', 'version_tag', default=None, help='BEE2 version tag to install (e.g., 2.4.46.1)')
+@click.option('--json', 'json_output', is_flag=True, help='Output result as JSON (for GUI)')
+@click.option('-y', '--yes', is_flag=True, help='Skip confirmation prompts')
+def init(version_tag, json_output, yes):
+    """Initialize BeePM configuration and install base packages
+
+    This command sets up BeePM for the first time, including:
+    - Selecting your BEE2 version
+    - Creating the BeePM directory structure
+    - Downloading base packages
+    - Hooking BeePM to BEE2
+
+    For quick re-hooking after unhook, use 'beepm hook' instead.
+
+    Examples:
+      beepm init
+      beepm init --version 2.4.46.1
+      beepm init --version 2.4.46.1 -y
+    """
+    # JSON output mode for GUI
+    if json_output:
+        return init_with_version(version_tag)
+
     # Header
     click.echo()
     width = 68
@@ -597,12 +618,57 @@ def init():
     # Check if already initialized
     if paths["config_file"].exists():
         click.echo()
-        click.echo(click.style("[WARNING] BeePM is already initialized!", fg="yellow", bold=True))
+        click.echo(click.style("[INFO] BeePM is already set up!", fg="cyan", bold=True))
+        click.echo()
         
-        if not click.confirm(click.style("          Do you want to reinitialize? This will overwrite existing configuration.", fg="yellow"), default=False):
+        # Check if BEE2 is currently hooked to BeePM
+        appdata = get_appdata_path()
+        bee2_config = appdata / "BEEMOD2" / "config" / "config.cfg"
+        
+        is_hooked = False
+        if bee2_config.exists():
+            import configparser
+            config = configparser.ConfigParser()
+            config.read(bee2_config)
+            
+            if "Directories" in config and "package" in config["Directories"]:
+                current_pkg_dir = Path(config["Directories"]["package"])
+                is_hooked = current_pkg_dir == paths["packages"]
+        
+        if is_hooked:
+            click.echo(click.style("[OK] BeePM is already hooked to BEE2", fg="green"))
+            click.echo(f"  Package directory: {paths['packages']}")
             click.echo()
-            click.echo(click.style("[CANCELLED] Initialization cancelled.", fg="red", bold=True))
-            return
+            
+            if not click.confirm(click.style("Do you want to reinitialize? (This will re-download base packages)", fg="yellow"), default=False):
+                click.echo()
+                click.echo(click.style("[CANCELLED] Nothing to do.", fg="cyan", bold=True))
+                return
+        else:
+            click.echo(click.style("[!] BeePM is set up but not currently hooked to BEE2", fg="yellow"))
+            click.echo()
+            
+            # Offer to just re-hook without full reinit
+            if click.confirm(click.style("Do you want to re-hook BeePM to BEE2? (Quick - no downloads)", fg="cyan"), default=True):
+                click.echo()
+                click.echo(click.style("Re-hooking BeePM to BEE2...", fg="cyan", bold=True))
+                
+                if modify_bee2_config(paths["packages"]):
+                    click.echo()
+                    click.echo(click.style("[OK] BeePM re-hooked successfully!", fg="green", bold=True))
+                    click.echo(f"  Package directory: {paths['packages']}")
+                    click.echo()
+                    return
+                else:
+                    click.echo()
+                    click.echo(click.style("[X] Failed to re-hook", fg="red", bold=True))
+                    return
+            
+            click.echo()
+            if not click.confirm(click.style("Do you want to reinitialize completely?", fg="yellow"), default=False):
+                click.echo()
+                click.echo(click.style("[CANCELLED] Initialization cancelled.", fg="red", bold=True))
+                return
     
     # Step 1: Fetch and select BEE2 version
     click.echo()
@@ -710,3 +776,80 @@ def init():
     click.echo(click.style("BEE2 has been configured to use BeePM packages!", fg="bright_magenta", bold=True))
     click.echo(click.style("You can now use BeePM to manage your BEE2 packages!", fg="magenta"))
     click.echo()
+
+
+def init_with_version(version_tag):
+    """Initialize/reinitialize with a specific version - JSON output for GUI"""
+    import json as json_module
+
+    result = {
+        "success": False,
+        "message": "",
+        "action": "init"
+    }
+
+    if not version_tag:
+        result["message"] = "Version tag is required for JSON mode"
+        print(json_module.dumps(result))
+        return
+
+    paths = get_beepm_paths()
+
+    try:
+        # Fetch versions to validate and get name
+        versions = fetch_bee2_versions()
+        selected_version = None
+
+        for v in versions:
+            if v["tag"] == version_tag or v["tag"] == f"v{version_tag}" or v["tag"].replace("v", "") == version_tag.replace("v", ""):
+                selected_version = v
+                break
+
+        if not selected_version:
+            # Create a minimal version object if not found in releases
+            selected_version = {
+                "tag": version_tag,
+                "name": f"BEE2 {version_tag}",
+                "published_at": ""
+            }
+
+        # Create directory structure
+        for name, path in paths.items():
+            if name != "config_file":
+                path.mkdir(parents=True, exist_ok=True)
+
+        # Modify BEE2 config
+        if not modify_bee2_config(paths["packages"]):
+            result["message"] = "Failed to modify BEE2 configuration"
+            print(json_module.dumps(result))
+            return
+
+        # Download base packages
+        if not download_base_packages(paths["packages"], selected_version):
+            result["message"] = "Failed to download base packages"
+            print(json_module.dumps(result))
+            return
+
+        # Create package metadata
+        bee2_version = selected_version['tag'].replace('v', '').replace('V', '')
+        version_parts = bee2_version.split('.')
+        if len(version_parts) > 3:
+            bee2_version = '.'.join(version_parts[:3])
+
+        create_package_metadata(paths["packages"], bee2_version)
+
+        # Create BeePM config
+        if not create_beepm_config(paths["config_file"], selected_version, paths["packages"]):
+            result["message"] = "Failed to create BeePM configuration"
+            print(json_module.dumps(result))
+            return
+
+        result["success"] = True
+        result["message"] = f"Successfully initialized with {selected_version['name']}"
+        result["version"] = selected_version["tag"]
+
+    except Exception as e:
+        result["success"] = False
+        result["message"] = f"Initialization failed: {e}"
+
+    print(json_module.dumps(result))

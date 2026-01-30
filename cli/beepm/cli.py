@@ -2,9 +2,12 @@
 
 import click
 from beepm.commands.init import init
+from beepm.commands.hook import hook
 from beepm.commands.uninit import unhook
 from beepm.commands.login import login
+from beepm.commands.generate import generate
 from beepm.commands.publish import publish
+from beepm.commands.unpublish import unpublish
 from beepm.commands.install import install
 from beepm.commands.uninstall import uninstall
 from beepm.commands.update import update
@@ -19,9 +22,9 @@ from beepm.commands.search import search
 @click.version_option()
 def cli():
     """BeePM - BEE2 Package Manager
-    
+
     A command-line tool for managing BEE2 packages.
-    
+
     Use 'beepm init' to get started!
     """
     pass
@@ -29,9 +32,12 @@ def cli():
 
 # Register commands
 cli.add_command(init)
+cli.add_command(hook)
 cli.add_command(unhook)
 cli.add_command(login)
+cli.add_command(generate)
 cli.add_command(publish)
+cli.add_command(unpublish)
 cli.add_command(install)
 cli.add_command(uninstall)
 cli.add_command(update)
