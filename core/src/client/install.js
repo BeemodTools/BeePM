@@ -438,11 +438,11 @@ const exists = (file) =>
     )
 
 /**
- * Takes over packages installed by BeePM 1 (installed_packages.json, files named
+ * Takes over packages installed by earlier BeePM versions (installed_packages.json, files named
  * <author>_<ID>.bee_pack): finds each one in the registry by BEE2 ID, renames the file,
- * and records it. Runs once; the old file is kept as installed_packages.beepm1.json.
+ * and records it. Runs once; the old file is kept as installed_packages.old.json.
  */
-export async function adoptBeePM1Installs(ctx) {
+export async function adoptLegacyInstalls(ctx) {
     const { api, paths } = ctx
     const legacy = await readJson(paths.legacyInstalled, null)
     if (!legacy?.packages) return { adopted: [], unknown: [] }
@@ -477,14 +477,14 @@ export async function adoptBeePM1Installs(ctx) {
             dependencies: document?.versions?.[entry.version]?.dependencies ?? {},
             compatibleWith: document?.versions?.[entry.version]?.compatibleWith ?? null,
             installedAt: new Date().toISOString(),
-            adoptedFromBeePM1: true,
+            adoptedFromLegacy: true,
         }
         adopted.push(name)
     }
     await saveInstalled(paths, installed)
     await rename(
         paths.legacyInstalled,
-        paths.legacyInstalled.replace(/\.json$/, ".beepm1.json"),
+        paths.legacyInstalled.replace(/\.json$/, ".old.json"),
     ).catch(() => {})
     return { adopted, unknown }
 }

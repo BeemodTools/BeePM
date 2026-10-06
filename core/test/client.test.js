@@ -81,7 +81,7 @@ test("hook remembers the old folder and unhook puts it back", async () => {
     assert.equal(config.hook, undefined)
 })
 
-test("unhook without a saved value removes the key, or uses BeePM 1's backup", async () => {
+test("unhook without a saved value removes the key, or uses the old CLI's backup", async () => {
     const env = {
         BEEPM_HOME: path.join(tmp.dir, "home2"),
         BEE2_CONFIG_DIR: path.join(tmp.dir, "bee2-2"),

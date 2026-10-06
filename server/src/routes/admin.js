@@ -102,7 +102,7 @@ export default async function adminRoutes(app) {
         return { entries: rows }
     })
 
-    // Copies the packages from BeePM 1's R2 registry into this registry (safe to run again)
+    // Copies the packages from the old R2 registry into this registry (safe to run again)
     app.post("/v1/admin/import-legacy", async (request) => {
         const user = await admin(request)
         const result = await importLegacy(app.deps, {

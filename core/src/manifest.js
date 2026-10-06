@@ -33,7 +33,7 @@ export function parseManifestText(text) {
  *   { scope, name, fullName, version, displayName, description, compatibleWith,
  *     dependencies: { "@scope/name": range }, legacyDependencyIds: { "@scope/name": "BEE2_ID" } }
  * The scope comes from a scoped "name", else "author", else options.defaultScope.
- * legacyDependencyIds remembers keys written the BeePM 1 way (@author/BEE2_ID) so the
+ * legacyDependencyIds remembers keys written the old way (@author/BEE2_ID) so the
  * server can map them to the package with that ID.
  */
 export function validateManifest(raw, { defaultScope = null } = {}) {

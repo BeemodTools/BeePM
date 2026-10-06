@@ -90,12 +90,12 @@ export function register(program) {
 
     admin
         .command("import-legacy [registryUrl]")
-        .description("Copy BeePM 1's packages into this registry (safe to run again)")
+        .description("Copy the old registry's packages into this one (safe to run again)")
         .action(async (registryUrl) => {
             const ctx = await getContext()
             requireLogin(ctx)
             info(
-                "Importing BeePM 1's registry. This downloads every package, so it can take a while...",
+                "Importing the old registry. This downloads every package, so it can take a while...",
             )
             const result = await ctx.api.admin.importLegacy(registryUrl)
             for (const line of result.imported) ok(line)

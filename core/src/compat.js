@@ -19,7 +19,7 @@ export function bee2Semver(version) {
 
 /**
  * Turns a compatibleWith value into a semver range string, or null for "any version".
- * Accepts semver ranges and the older forms BeePM 1 used:
+ * Accepts semver ranges and the older forms earlier BeePM versions used:
  *   ">=2.4.40,<2.5"        -> ">=2.4.40 <2.5"
  *   "~=2.4.40"             -> "~2.4.40"
  *   "==2.4.*"              -> "=2.4.*"

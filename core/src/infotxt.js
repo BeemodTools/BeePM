@@ -91,7 +91,7 @@ export function readInfoTxt(text) {
     try {
         pairs = parseKeyValues(text)
     } catch (err) {
-        // Fall back to the line BeePM 1 looked for, so slightly malformed files still work
+        // Fall back to the line earlier BeePM versions looked for, so slightly malformed files still work
         const match = /^\s*"ID"\s+"([^"]+)"/im.exec(String(text).replace(/^﻿/, ""))
         const id = normalizeBeeId(match?.[1])
         if (!id) throw new Error(`info.txt couldn't be read (${err.message})`)

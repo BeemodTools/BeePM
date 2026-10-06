@@ -112,11 +112,11 @@ strong { color: #e0e0e0; font-weight: 600; }
 .alert.info { background: rgba(46, 255, 123, 0.08); border: 1px solid rgba(46, 255, 123, 0.3); color: #c3c7c9; }
 .alert.info .icon { color: #2eff7b; }
 .status { display: flex; flex-direction: column; align-items: center; text-align: center; padding: 16px 8px 8px; }
-.status .circle { width: 80px; height: 80px; border-radius: 50%; display: grid; place-items: center; margin-bottom: 24px; }
+.status .circle { width: 52px; height: 52px; border-radius: 50%; display: grid; place-items: center; margin-bottom: 16px; }
 .status .circle.success { background: rgba(46, 255, 123, 0.1); color: #2eff7b; }
 .status .circle.error { background: rgba(211, 47, 47, 0.1); color: #d32f2f; }
 .status .circle.neutral { background: rgba(255, 255, 255, 0.06); color: #888; }
-.status h1 { margin: 0 0 8px; color: #fff; font-size: 1.5rem; font-weight: 600; line-height: 1.33; }
+.status h1 { margin: 0 0 8px; color: #fff; font-size: 1.25rem; font-weight: 600; line-height: 1.4; }
 .status p { margin: 0 0 8px; color: #888; max-width: 400px; }
 .status .btn { margin-top: 16px; min-width: 200px; }
 `
@@ -163,7 +163,7 @@ function statusPage(title, message, kind, extra = "") {
         html`<section class="card">
             <div class="card-body">
                 <div class="status">
-                    <div class="circle ${kind}">${icon(iconName, 40)}</div>
+                    <div class="circle ${kind}">${icon(iconName, 28)}</div>
                     <h1>${title}</h1>
                     ${message ? html`<p>${message}</p>` : ""} ${extra}
                 </div>
@@ -300,7 +300,7 @@ export function approvePage(session, profile, providerLabel, user) {
         ? html`<div class="alert info">
               ${icon("success")}
               <div>
-                  Welcome to BeePM 2! Your packages from BeePM 1 are already under
+                  Welcome to BeePM! Your packages from the old registry are already under
                   <strong>@${user.handle}</strong>.
               </div>
           </div>`

@@ -8,7 +8,7 @@ import yazl from "yazl"
 import { readInfoTxt } from "./infotxt.js"
 import { MANIFEST_FILE, parseManifestText, validateManifest } from "./manifest.js"
 
-/** The only file types a .bee_pack may contain (BeePM 1's list, plus model .ani files). */
+/** The only file types a .bee_pack may contain (the old BeePM CLI's list, plus model .ani files). */
 export const ALLOWED_EXTENSIONS = new Set([
     ".txt",
     ".vtf",

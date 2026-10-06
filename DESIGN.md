@@ -1,4 +1,4 @@
-# BeePM 2 design
+# BeePM design
 
 BeePM is a package manager for BEEmod (BEE2) packages, modeled on npm: a central
 registry of scoped packages with immutable semver versions, and a client (desktop
@@ -11,14 +11,14 @@ cli/      beepm          the `beepm` command
 app/      @beepm/app     Electron desktop app
 ```
 
-## What changed from BeePM 1
+## What changed from the prototype
 
-BeePM 1 enforced every rule on the user's machine. The real gate was the R2 write
-keys in `cli/.env`, and identity came from a local `auth.json` that anyone could edit.
-In BeePM 2 the server is the only thing that can write to storage, and it decides who
-can do what.
+The unreleased prototype (Electron app + Python CLI + an R2 bucket) enforced every rule
+on the user's machine. The real gate was the R2 write keys in `cli/.env`, and identity
+came from a local `auth.json` that anyone could edit. In BeePM 1.0 the server is the only
+thing that can write to storage, and it decides who can do what.
 
-| | BeePM 1 | BeePM 2 |
+| | Prototype | BeePM 1.0 |
 |---|---|---|
 | Storage | Public R2 bucket, clients write with shared keys | Private Railway bucket, only the server writes |
 | Registry | One `registry.json` rewritten by every publisher | Postgres rows; versions are immutable |
@@ -219,5 +219,5 @@ banReason, handle}`, `GET /v1/admin/audit`, `POST /v1/admin/import-legacy`.
   6. Record `{version, sha256, beeId, explicit, installedAt, file}` in `installed.json`.
 - **Uninstall** removes the file and any dependencies that nothing else needs.
   **Update** reinstalls to the highest version allowed by the original range.
-- Installs from BeePM 1 (`installed_packages.json`, files `<author>_<ID>.bee_pack`) are
+- Installs from the prototype (`installed_packages.json`, files `<author>_<ID>.bee_pack`) are
   adopted on first run by matching BEE2 IDs through `/v1/lookup?beeId=`.

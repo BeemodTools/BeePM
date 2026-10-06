@@ -83,7 +83,7 @@ test("publishing from a GitHub release the user owns (disallowed files are strip
     assert.equal(needsGithub.body.error.code, "github_not_linked")
 })
 
-test("importing BeePM 1's registry creates unclaimed accounts their owners can log in to", async () => {
+test("importing the old registry creates unclaimed accounts their owners can log in to", async () => {
     const base = "https://legacy.example"
     const strip = await readFile(
         await makePack(t.dir, {

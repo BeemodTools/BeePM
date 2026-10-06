@@ -131,7 +131,7 @@ export async function unhookBee2(paths, bee2, config) {
 
     let original = config.hook ? config.hook.originalPackageDir : undefined
     if (original === undefined) {
-        // BeePM 1 kept a whole copy of config.cfg instead
+        // Earlier BeePM versions kept a whole copy of config.cfg instead
         const backup = await readFile(`${bee2.configFile}.backup`, "utf8").catch(() => null)
         const value = backup ? getIniValue(backup, "Directories", "package") : null
         original = samePath(value, paths.packages) ? null : value

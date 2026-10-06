@@ -4,7 +4,7 @@ import { bee2Semver, isCompatible, normalizeCompat } from "../src/compat.js"
 import { readInfoTxt } from "../src/infotxt.js"
 import { ManifestError, parseManifestText, validateManifest } from "../src/manifest.js"
 
-test("normalizeCompat converts BeePM 1 forms to semver ranges", () => {
+test("normalizeCompat converts the old forms to semver ranges", () => {
     assert.equal(normalizeCompat(">=2.4.41"), ">=2.4.41")
     assert.equal(normalizeCompat(">=2.4.41 <2.4.46"), ">=2.4.41 <2.4.46")
     assert.equal(normalizeCompat(">=2.4.40,<2.5"), ">=2.4.40 <2.5")
@@ -46,7 +46,7 @@ ID arengs_packages
     assert.deepEqual(info.prerequisites, ["BEE2_CLEAN_STYLE", "VALVE_TEST_ELEM"])
 })
 
-test("readInfoTxt falls back to BeePM 1's regex for malformed files and rejects bad IDs", () => {
+test("readInfoTxt falls back to the old regex for malformed files and rejects bad IDs", () => {
     assert.equal(readInfoTxt('"ID" "OK_ID"\n"Broken" {').id, "OK_ID")
     assert.throws(() => readInfoTxt('"Name" "No ID here"'), /no top-level "ID"/)
     assert.throws(() => readInfoTxt('"ID" "has spaces"'), /may only contain/)

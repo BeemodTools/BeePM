@@ -78,7 +78,7 @@ To finish the setup:
    - GitHub: https://github.com/settings/developers → New OAuth App → callback URL
      `https://beepm-registry-production.up.railway.app/oauth/github/callback`
 2. Connect the service to this repository's branch. Migrations run at startup.
-3. Log in with an admin handle (`BOOTSTRAP_ADMINS`) and copy BeePM 1's packages over with
+3. Log in with an admin handle (`BOOTSTRAP_ADMINS`) and copy the old registry's packages over with
    `beepm admin import-legacy`. It's safe to run again.
 
 The app and CLI use this registry by default (`DEFAULT_REGISTRY` in `core/src/client/api.js`).

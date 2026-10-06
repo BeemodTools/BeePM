@@ -91,7 +91,7 @@ function isRange(text) {
  *   @areng14/arengitems          { scope, name, range: null }
  *   @areng14/arengitems@^1.2.0   { scope, name, range: "^1.2.0" }
  *   arengitems / arengitems@1.0  { scope: null, name, range }   (resolved by name lookup)
- *   Areng14@arengitems[@1.0.0]   the old BeePM 1 author@name form, same as @areng14/arengitems
+ *   Areng14@arengitems[@1.0.0]   the old author@name form, same as @areng14/arengitems
  * "latest" means no range. Throws on anything else.
  */
 export function parseSpec(input) {

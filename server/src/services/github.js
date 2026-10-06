@@ -2,7 +2,7 @@ import { createWriteStream } from "node:fs"
 import { Readable, Transform } from "node:stream"
 import { pipeline } from "node:stream/promises"
 
-/** Minimal GitHub REST client used for release imports and the BeePM 1 import. */
+/** Minimal GitHub REST client used for release imports and the old-registry import. */
 export function createGithubApi(fetchImpl, token = null) {
     const headers = {
         Accept: "application/vnd.github+json",

@@ -13,7 +13,7 @@ import { readJson, writeJson } from "./files.js"
 export async function loadConfig(paths) {
     const config = await readJson(paths.config, null)
     if (config) return config
-    // BeePM 1 kept {bee2_version, bee2_version_name, beemod_version} in beepm_config.json
+    // Earlier BeePM versions kept {bee2_version, bee2_version_name, beemod_version} in beepm_config.json
     const legacy = await readJson(paths.legacyConfig, null)
     if (legacy?.bee2_version || legacy?.beemod_version) {
         return {
@@ -22,7 +22,7 @@ export async function loadConfig(paths) {
                 name: legacy.bee2_version_name ?? null,
                 basePackages: [],
                 baseFiles: [],
-                fromBeePM1: true,
+                fromLegacy: true,
             },
         }
     }

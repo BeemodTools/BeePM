@@ -1,5 +1,5 @@
 /**
- * Copies BeePM 1's packages into the database and storage configured by the environment
+ * Copies the old registry's packages into the database and storage configured by the environment
  * (the same variables the server uses). Safe to run again.
  *   node scripts/import-legacy.js [registry.json URL]
  * On a running server, admins can do the same with POST /v1/admin/import-legacy.

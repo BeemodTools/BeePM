@@ -27,7 +27,7 @@ export function beepmPaths(env = process.env) {
         config: path.join(configDir, "config.json"),
         installed: path.join(configDir, "installed.json"),
         credentials: path.join(configDir, "credentials.json"),
-        // BeePM 1 files, adopted on first run
+        // Files from earlier BeePM versions, adopted on first run
         legacyConfig: path.join(configDir, "beepm_config.json"),
         legacyInstalled: path.join(configDir, "installed_packages.json"),
         legacyAuth: path.join(configDir, "auth.json"),

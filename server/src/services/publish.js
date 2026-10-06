@@ -83,7 +83,7 @@ async function resolveDependencies(db, manifest) {
  *   source      stored with the version, e.g. { type: "upload" } or { type: "github", ... }
  *   stagingKey  if set, the file is already in the bucket there and gets copied (no re-upload)
  *   strip       remove disallowed files instead of rejecting them (GitHub imports)
- *   publishedAt / skipDependencyCheck / allowLegacy: used by the BeePM 1 import only
+ *   publishedAt / skipDependencyCheck / allowLegacy: used by the old-registry import only
  * Returns { name, version, created, strippedFiles }.
  */
 export async function publishFile(deps, options) {

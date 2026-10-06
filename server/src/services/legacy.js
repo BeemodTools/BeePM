@@ -11,7 +11,7 @@ async function fetchJson(fetchImpl, url) {
 }
 
 /**
- * Copies every package from BeePM 1's public R2 registry (registry.json and
+ * Copies every package from the old public R2 registry (registry.json and
  * github_packages.json) into this registry. Safe to run again: existing versions are skipped.
  *
  * Each old author (a GitHub username) becomes an unclaimed BeePM account with that GitHub
@@ -45,7 +45,7 @@ export async function importLegacy(deps, { registryUrl }) {
                 author: pkg.author,
                 version,
                 url,
-                yanked: info.yanked ? info.yank_reason || "Yanked in BeePM 1" : null,
+                yanked: info.yanked ? info.yank_reason || "Yanked in the old registry" : null,
                 source: { type: "legacy", url },
                 publishedAt: registry.lastUpdated ?? null,
             })

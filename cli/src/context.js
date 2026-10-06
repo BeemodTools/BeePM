@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process"
 import { access } from "node:fs/promises"
-import { adoptBeePM1Installs, createClientContext, createFileTokenStore } from "@beepm/core/client"
+import { adoptLegacyInstalls, createClientContext, createFileTokenStore } from "@beepm/core/client"
 import { color, info, warn } from "./output.js"
 
 /** Thrown for problems the user should just read (no stack trace). */
@@ -31,7 +31,7 @@ export function requireLogin(ctx) {
     return ctx.login
 }
 
-/** Takes over BeePM 1 installs the first time a package command runs. */
+/** Takes over installs from earlier BeePM versions the first time a package command runs. */
 export async function adoptOldInstalls(ctx) {
     const exists = await access(ctx.paths.legacyInstalled).then(
         () => true,
@@ -39,17 +39,17 @@ export async function adoptOldInstalls(ctx) {
     )
     if (!exists) return
     try {
-        const { adopted, unknown } = await adoptBeePM1Installs(ctx)
+        const { adopted, unknown } = await adoptLegacyInstalls(ctx)
         if (adopted.length)
             info(
-                `Took over ${adopted.length} package(s) installed by BeePM 1: ${adopted.join(", ")}`,
+                `Took over ${adopted.length} package(s) installed by an earlier BeePM version: ${adopted.join(", ")}`,
             )
         if (unknown.length)
             warn(
-                `These BeePM 1 packages aren't in the new registry and were left alone: ${unknown.join(", ")}`,
+                `These packages from an earlier BeePM version aren't in the registry and were left alone: ${unknown.join(", ")}`,
             )
     } catch (err) {
-        warn(`Couldn't take over BeePM 1's installed packages yet: ${err.message}`)
+        warn(`Couldn't take over packages installed by an earlier BeePM version yet: ${err.message}`)
     }
 }
 

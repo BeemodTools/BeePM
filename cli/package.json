@@ -1,6 +1,6 @@
 {
     "name": "beepm",
-    "version": "2.0.0",
+    "version": "1.0.0",
     "description": "BeePM command line: install, publish and manage BEEmod packages",
     "type": "module",
     "bin": {
