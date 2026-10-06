@@ -1,0 +1,106 @@
+import { readFileSync } from "node:fs"
+import cookie from "@fastify/cookie"
+import formbody from "@fastify/formbody"
+import Fastify, { LogController } from "fastify"
+import { homePage, PAGE_HEADERS } from "./auth/pages.js"
+import authRoutes from "./auth/routes.js"
+import { ApiError } from "./lib/errors.js"
+import adminRoutes from "./routes/admin.js"
+import manageRoutes from "./routes/manage.js"
+import meRoutes from "./routes/me.js"
+import packageRoutes from "./routes/packages.js"
+import publishRoutes from "./routes/publish.js"
+
+const { version } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"))
+
+/**
+ * Builds the API. Everything it talks to is passed in, so tests can use PGlite,
+ * local storage and fake OAuth providers:
+ *   { config, db, storage, providers, fetch }
+ */
+export async function buildApp(deps) {
+    const app = Fastify({
+        logger: deps.logger ?? { level: deps.config.logLevel },
+        trustProxy: true,
+        bodyLimit: 1024 * 1024,
+        // Request logs are written below without query strings (OAuth codes live there)
+        logController: new LogController({ disableRequestLogging: true }),
+    })
+    app.decorate("deps", { fetch: globalThis.fetch, ...deps, log: app.log })
+    app.decorateRequest("user", null)
+
+    await app.register(cookie)
+    await app.register(formbody)
+
+    app.addHook("onResponse", async (request, reply) => {
+        app.log.info(
+            {
+                method: request.method,
+                path: request.url.split("?")[0],
+                status: reply.statusCode,
+                ms: Math.round(reply.elapsedTime),
+            },
+            "request",
+        )
+    })
+
+    app.setErrorHandler((err, request, reply) => {
+        if (err instanceof ApiError) {
+            return reply.code(err.status).send({
+                error: {
+                    code: err.code,
+                    message: err.message,
+                    ...(err.details ? { details: err.details } : {}),
+                },
+            })
+        }
+        if (err.validation || err.statusCode === 400 || err.statusCode === 415) {
+            return reply.code(400).send({ error: { code: "bad_request", message: err.message } })
+        }
+        if (err.statusCode === 413) {
+            return reply
+                .code(413)
+                .send({ error: { code: "too_large", message: "Request body too large." } })
+        }
+        request.log.error({ err }, "request failed")
+        return reply.code(500).send({
+            error: { code: "internal", message: "Something went wrong on the server." },
+        })
+    })
+
+    app.setNotFoundHandler((request, reply) =>
+        reply
+            .code(404)
+            .send({
+                error: {
+                    code: "not_found",
+                    message: `No route for ${request.method} ${request.url.split("?")[0]}`,
+                },
+            }),
+    )
+
+    app.get("/health", async () => ({ ok: true }))
+
+    app.get("/v1", async () => ({
+        name: "BeePM registry",
+        version,
+        providers: Object.keys(deps.providers),
+        limits: {
+            maxUploadBytes: deps.config.maxUploadBytes,
+            minAccountAgeDays: deps.config.minAccountAgeDays,
+            unpublishHours: deps.config.unpublishHours,
+        },
+    }))
+
+    app.get("/", async (request, reply) => reply.headers(PAGE_HEADERS).send(homePage()))
+
+    await app.register(authRoutes)
+    await app.register(meRoutes)
+    await app.register(packageRoutes)
+    await app.register(publishRoutes)
+    await app.register(manageRoutes)
+    await app.register(adminRoutes)
+    if (deps.storage.routes) await app.register(deps.storage.routes)
+
+    return app
+}

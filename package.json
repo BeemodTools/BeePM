@@ -1,88 +1,26 @@
 {
-    "name": "beepm",
-    "main": "backend/main.js",
+    "name": "beepm-monorepo",
     "private": true,
-    "version": "0.1.0",
-    "description": "BEE Package Manager",
+    "version": "2.0.0",
+    "description": "BeePM - package manager for BEEmod",
     "author": "Areng",
+    "type": "module",
+    "workspaces": [
+        "core",
+        "server",
+        "cli",
+        "app"
+    ],
+    "engines": {
+        "node": ">=22.12"
+    },
     "scripts": {
-        "dev": "concurrently -k \"vite\" \"electron .\"",
-        "build": "vite build && electron-builder",
-        "start": "electron .",
-        "format": "prettier --write .",
-        "lint": "eslint . --fix"
-    },
-    "build": {
-        "appId": "com.beepm.app",
-        "productName": "BeePM",
-        "icon": "public/icon.png",
-        "files": [
-            "dist/**/*",
-            "backend/**/*",
-            "node_modules/**/*",
-            "package.json"
-        ],
-        "directories": {
-            "buildResources": "build",
-            "output": "release"
-        },
-        "win": {
-            "target": [
-                {
-                    "target": "nsis",
-                    "arch": [
-                        "x64"
-                    ]
-                }
-            ],
-            "icon": "public/icon.ico"
-        },
-        "nsis": {
-            "oneClick": false,
-            "allowToChangeInstallationDirectory": true,
-            "perMachine": false,
-            "deleteAppDataOnUninstall": false
-        },
-        "linux": {
-            "target": [
-                {
-                    "target": "AppImage",
-                    "arch": [
-                        "x64"
-                    ]
-                }
-            ],
-            "category": "Development",
-            "icon": "public/icon.png"
-        }
-    },
-    "dependencies": {
-        "@aws-sdk/client-s3": "^3.978.0",
-        "@emotion/react": "^11.14.0",
-        "@emotion/styled": "^11.14.1",
-        "@mui/icons-material": "^7.2.0",
-        "@mui/material": "^7.2.0",
-        "adm-zip": "^0.5.16",
-        "dotenv": "^17.2.3",
-        "react": "^19.1.0",
-        "react-dom": "^19.1.0",
-        "react-router-dom": "^7.7.0"
+        "test": "npm test --workspaces --if-present",
+        "dev:server": "npm run dev -w @beepm/server",
+        "dev:app": "npm run dev -w @beepm/app",
+        "format": "prettier --write ."
     },
     "devDependencies": {
-        "@eslint/js": "^9.30.1",
-        "@types/react": "^19.1.8",
-        "@types/react-dom": "^19.1.6",
-        "@vitejs/plugin-react": "^4.7.0",
-        "concurrently": "^9.2.0",
-        "electron": "^40.1.0",
-        "electron-builder": "^26.0.12",
-        "eslint": "^9.30.1",
-        "eslint-config-prettier": "^10.1.5",
-        "eslint-plugin-prettier": "^5.5.1",
-        "eslint-plugin-react-hooks": "^5.2.0",
-        "eslint-plugin-react-refresh": "^0.4.20",
-        "globals": "^16.3.0",
-        "prettier": "^3.6.2",
-        "vite": "^6.4.1"
+        "prettier": "^3.6.2"
     }
 }

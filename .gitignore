@@ -9,6 +9,11 @@ release/
 .env
 .env.local
 .env.*.local
+.env.*
+!.env.example
+
+# Local server data (dev database, dev storage)
+server/.data/
 
 # IDE
 .vscode/

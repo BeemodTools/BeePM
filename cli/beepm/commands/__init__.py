@@ -1,2 +1,0 @@
-"""BeePM commands package"""
-

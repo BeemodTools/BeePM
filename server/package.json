@@ -1,0 +1,27 @@
+{
+    "name": "@beepm/server",
+    "version": "2.0.0",
+    "private": true,
+    "description": "BeePM registry API (runs on Railway)",
+    "type": "module",
+    "main": "src/index.js",
+    "scripts": {
+        "start": "node src/index.js",
+        "dev": "node --watch src/index.js",
+        "test": "node --test --test-concurrency=1 \"test/**/*.test.js\"",
+        "import-legacy": "node scripts/import-legacy.js"
+    },
+    "dependencies": {
+        "@aws-sdk/client-s3": "^3.1146.0",
+        "@aws-sdk/s3-request-presigner": "^3.1146.0",
+        "@beepm/core": "*",
+        "@fastify/cookie": "^11.1.2",
+        "@fastify/formbody": "^9.0.0",
+        "fastify": "^5.12.5",
+        "pg": "^8.23.1",
+        "semver": "^7.8.5"
+    },
+    "devDependencies": {
+        "@electric-sql/pglite": "^0.5.8"
+    }
+}

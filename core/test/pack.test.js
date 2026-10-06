@@ -1,0 +1,97 @@
+import assert from "node:assert/strict"
+import { mkdir, writeFile } from "node:fs/promises"
+import path from "node:path"
+import { after, before, test } from "node:test"
+import { checkPack, hashFile, PackError, packFolder, readPack, stripPack } from "../src/pack.js"
+import { makeZip, packFiles, tempDir } from "./helpers.js"
+
+let tmp
+before(async () => {
+    tmp = await tempDir()
+})
+after(() => tmp.cleanup())
+
+test("checkPack accepts a valid package", async () => {
+    const file = await makeZip(path.join(tmp.dir, "ok.bee_pack"), packFiles())
+    const result = await checkPack(file, { defaultScope: "tester" })
+    assert.equal(result.beeId, "TEST_PACK")
+    assert.equal(result.manifest.fullName, "@tester/test-pack")
+    assert.equal(result.files.length, 4)
+    assert.match(await hashFile(file), /^[0-9a-f]{64}$/)
+})
+
+test("checkPack lists every problem", async () => {
+    const file = await makeZip(path.join(tmp.dir, "bad.bee_pack"), {
+        "bee-package.json": JSON.stringify({ name: "x", version: "nope" }),
+        "virus.exe": "MZ",
+        README: "no extension",
+    })
+    await assert.rejects(checkPack(file), (err) => {
+        assert.ok(err instanceof PackError)
+        assert.equal(err.problems.length, 3) // no info.txt, bad version, disallowed files
+        assert.deepEqual(err.disallowed.sort(), ["README", "virus.exe"])
+        return true
+    })
+})
+
+test("checkPack finds root files case-insensitively and rejects non-zips", async () => {
+    const file = await makeZip(path.join(tmp.dir, "case.bee_pack"), {
+        "INFO.TXT": '"ID" "CASE_TEST"',
+        "Bee-Package.json": JSON.stringify({ name: "@me/case", version: "2.0.0" }),
+    })
+    assert.equal((await checkPack(file)).beeId, "CASE_TEST")
+
+    const notZip = path.join(tmp.dir, "fake.bee_pack")
+    await writeFile(notZip, "not a zip")
+    await assert.rejects(readPack(notZip), /isn't a valid zip/)
+})
+
+test("checkPack rejects unsafe paths", async () => {
+    // yazl refuses to write "..", so write the name bytes by hand: same length as "..\\x.txt"
+    const file = await makeZip(path.join(tmp.dir, "unsafe.bee_pack"), {
+        ...packFiles(),
+        "ZZ/evil.txt": "x",
+    })
+    const { readFile } = await import("node:fs/promises")
+    const bytes = await readFile(file)
+    let index = bytes.indexOf("ZZ/evil.txt")
+    while (index >= 0) {
+        bytes.write("../evil.txt", index)
+        index = bytes.indexOf("ZZ/evil.txt", index + 1)
+    }
+    await writeFile(file, bytes)
+    await assert.rejects(checkPack(file), /couldn't be read/)
+})
+
+test("stripPack removes disallowed files so the package passes", async () => {
+    const file = await makeZip(path.join(tmp.dir, "dirty.bee_pack"), {
+        ...packFiles(),
+        "notes.md": "# hi",
+        "tools/run.bat": "echo hi",
+    })
+    const first = await checkPack(file, { defaultScope: "me", allowDisallowed: true })
+    assert.deepEqual(first.disallowed.sort(), ["notes.md", "tools/run.bat"])
+
+    const clean = path.join(tmp.dir, "clean.bee_pack")
+    await stripPack(file, clean, first.disallowed)
+    const second = await checkPack(clean, { defaultScope: "me" })
+    assert.equal(second.files.length, 4)
+    assert.equal(second.beeId, "TEST_PACK")
+})
+
+test("packFolder zips allowed files and skips the rest", async () => {
+    const folder = path.join(tmp.dir, "folder-pack")
+    for (const [name, content] of Object.entries({
+        ...packFiles(),
+        ".git/config": "x",
+        "build.ps1": "x",
+    })) {
+        await mkdir(path.dirname(path.join(folder, name)), { recursive: true })
+        await writeFile(path.join(folder, name), content)
+    }
+    const out = path.join(tmp.dir, "folder.bee_pack")
+    const { added, skipped } = await packFolder(folder, out)
+    assert.equal(added.length, 4)
+    assert.deepEqual(skipped.sort(), [".git/", "build.ps1"])
+    assert.equal((await checkPack(out, { defaultScope: "me" })).beeId, "TEST_PACK")
+})
