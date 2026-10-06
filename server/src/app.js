@@ -4,12 +4,15 @@ import formbody from "@fastify/formbody"
 import Fastify, { LogController } from "fastify"
 import { homePage, PAGE_HEADERS } from "./auth/pages.js"
 import authRoutes from "./auth/routes.js"
+import { onAudit } from "./lib/audit.js"
 import { ApiError } from "./lib/errors.js"
 import adminRoutes from "./routes/admin.js"
 import manageRoutes from "./routes/manage.js"
 import meRoutes from "./routes/me.js"
 import packageRoutes from "./routes/packages.js"
 import publishRoutes from "./routes/publish.js"
+import { createActivityLog } from "./services/activity.js"
+import { createDiscordLog } from "./services/discord.js"
 
 const { version } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"))
 
@@ -17,6 +20,7 @@ const { version } = JSON.parse(readFileSync(new URL("../package.json", import.me
  * Builds the API. Everything it talks to is passed in, so tests can use PGlite,
  * local storage and fake OAuth providers:
  *   { config, db, storage, providers, fetch }
+ * Activity goes to Discord when DISCORD_LOG_WEBHOOK / DISCORD_RELEASES_WEBHOOK are set.
  */
 export async function buildApp(deps) {
     const app = Fastify({
@@ -28,6 +32,23 @@ export async function buildApp(deps) {
     })
     app.decorate("deps", { fetch: globalThis.fetch, ...deps, log: app.log })
     app.decorateRequest("user", null)
+
+    const discord = createDiscordLog({
+        webhooks: {
+            log: deps.config.discordLogWebhook,
+            releases: deps.config.discordReleasesWebhook,
+        },
+        fetch: app.deps.fetch,
+        logger: app.log,
+    })
+    if (discord.enabled("log") || discord.enabled("releases")) {
+        const activity = createActivityLog({ db: deps.db, discord, logger: app.log })
+        onAudit(deps.db, (entry) => activity.audit(entry))
+        app.deps.activity = activity
+    }
+    app.deps.discord = discord
+    // Logs still on their way to Discord get there before the server stops
+    app.addHook("onClose", () => app.deps.activity?.settle() ?? discord.flush())
 
     await app.register(cookie)
     await app.register(formbody)
@@ -63,6 +84,11 @@ export async function buildApp(deps) {
                 .send({ error: { code: "too_large", message: "Request body too large." } })
         }
         request.log.error({ err }, "request failed")
+        app.deps.activity?.serverError({
+            method: request.method,
+            url: request.url,
+            message: err.message,
+        })
         return reply.code(500).send({
             error: { code: "internal", message: "Something went wrong on the server." },
         })

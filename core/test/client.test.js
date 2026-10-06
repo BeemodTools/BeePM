@@ -10,6 +10,9 @@ import {
     hookBee2,
     installBasePackages,
     InstallError,
+    listGithubReleases,
+    listGithubRepos,
+    suggestManifest,
     planInstall,
     removeIniKey,
     saveConfig,
@@ -323,4 +326,88 @@ test("setup downloads the packages before the music and announces every download
     const downloads = [...new Set(events.filter((e) => e.step === "download").map((e) => e.asset))]
     assert.deepEqual(downloads, ["BEE2_v4.46.1_packages.zip", "BEE2_v4.46.0_music.zip"])
     assert.deepEqual(config.bee2.basePackages, ["BEE2_CLEAN_STYLE"])
+})
+
+test("GitHub: repos the account can publish from, and releases with a .bee_pack", async () => {
+    const replies = {
+        "/users/maker/repos?type=owner&sort=pushed&per_page=100": [
+            {
+                owner: { login: "maker" },
+                name: "old",
+                full_name: "maker/old",
+                pushed_at: "2025-01-01T00:00:00Z",
+            },
+            {
+                owner: { login: "maker" },
+                name: "secret",
+                full_name: "maker/secret",
+                private: true,
+                pushed_at: "2026-09-01T00:00:00Z",
+            },
+        ],
+        "/users/maker/orgs?per_page=100": [{ login: "team" }, { login: "gone" }],
+        "/orgs/team/repos?type=public&sort=pushed&per_page=100": [
+            {
+                owner: { login: "team" },
+                name: "items",
+                full_name: "team/items",
+                pushed_at: "2026-10-01T00:00:00Z",
+            },
+        ],
+        "/repos/team/items/releases?per_page=30": [
+            { tag_name: "v2", name: "", draft: true, assets: [{ name: "a.bee_pack" }] },
+            {
+                tag_name: "v1.1",
+                name: "Big update",
+                assets: [{ name: "items.bee_pack" }, { name: "notes.txt" }],
+            },
+            { tag_name: "v1.0", name: "First", assets: [{ name: "source.zip" }] },
+        ],
+    }
+    const fetch = async (url) => {
+        const reply = replies[url.replace("https://api.github.com", "")]
+        return reply
+            ? new Response(JSON.stringify(reply), { status: 200 })
+            : new Response("{}", { status: 404 })
+    }
+
+    // Private repos are left out; an org whose repos can't be read is skipped
+    const repos = await listGithubRepos({ fetch }, "maker")
+    assert.deepEqual(
+        repos.map((r) => r.fullName),
+        ["team/items", "maker/old"],
+    )
+
+    // Drafts and releases without a .bee_pack are left out
+    const releases = await listGithubReleases({ fetch }, "team", "items")
+    assert.deepEqual(releases, [
+        {
+            tag: "v1.1",
+            name: "Big update",
+            publishedAt: null,
+            prerelease: false,
+            assets: ["items.bee_pack"],
+        },
+    ])
+    await assert.rejects(listGithubReleases({ fetch }, "team", "nope"), /doesn't know/)
+})
+
+test("suggestManifest continues a published package: its name, the next version", async () => {
+    const folder = path.join(tmp.dir, "suggest")
+    await mkdir(folder, { recursive: true })
+    await writeFile(path.join(folder, "info.txt"), '"ID" "SAME_ITEMS"\n"Name" "Renamed Items"\n')
+    const api = (packages) => ({
+        lookup: async ({ beeId }) => ({ packages: beeId === "SAME_ITEMS" ? packages : [] }),
+        packument: async () => ({ versions: { "1.0.0": {}, "1.2.0": {}, "1.10.0": {} } }),
+    })
+
+    const next = await suggestManifest({ api: api(["@me/same-items"]) }, folder, { handle: "me" })
+    assert.equal(next.manifest.name, "@me/same-items") // not "@me/renamed-items" from info.txt
+    assert.equal(next.manifest.version, "1.10.1")
+    assert.deepEqual(next.published, { name: "@me/same-items", latest: "1.10.0" })
+
+    const fresh = await suggestManifest({ api: api([]) }, folder, { handle: "me" })
+    assert.equal(fresh.manifest.name, "@me/renamed-items")
+    assert.equal(fresh.manifest.version, "1.0.0")
+    assert.equal(fresh.published, null)
 })

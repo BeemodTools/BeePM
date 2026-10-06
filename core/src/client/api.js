@@ -118,13 +118,19 @@ export function createApi({
 
         createUpload: ({ size, sha256 }) => request("POST", "/v1/uploads", { size, sha256 }),
         finalizeUpload: (id) => request("POST", `/v1/uploads/${encodeURIComponent(id)}/finalize`),
-        importGithub: ({ owner, repo, tag, asset }) =>
+        checkPublish: ({ manifest, beeId }) =>
+            request("POST", "/v1/publish/check", { manifest, beeId }),
+        // watch: true also publishes the repo's new releases automatically; false stops that
+        importGithub: ({ owner, repo, tag, asset, watch }) =>
             request("POST", "/v1/imports/github", {
                 owner,
                 repo,
                 tag: tag || undefined,
                 asset: asset || undefined,
+                watch,
             }),
+        githubWatch: (name) => request("GET", `${pkg(name)}/github-watch`),
+        stopGithubWatch: (name) => request("DELETE", `${pkg(name)}/github-watch`),
 
         yank: (name, version, reason) => request("POST", `${ver(name, version)}/yank`, { reason }),
         unyank: (name, version) => request("DELETE", `${ver(name, version)}/yank`),

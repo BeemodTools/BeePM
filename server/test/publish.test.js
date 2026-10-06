@@ -139,6 +139,49 @@ test("only owners publish; new packages go in your own scope", async () => {
     assert.equal(lastOwner.body.error.code, "last_owner")
 })
 
+test("the publish check runs the registry's rules without a file", async () => {
+    const check = (token, manifest, beeId) =>
+        api(t, token, "POST", "/v1/publish/check", { manifest, beeId })
+
+    const fresh = await check(alice, { name: "brand-new", version: "1.0.0" }, "ALICE_NEW")
+    assert.equal(fresh.status, 200, JSON.stringify(fresh.body))
+    assert.deepEqual(fresh.body, { name: "@alice/brand-new", version: "1.0.0", created: true })
+
+    const codes = async (token, manifest, beeId) =>
+        (await check(token, manifest, beeId)).body.error.code
+    assert.equal(
+        await codes(bob, { name: "@alice/alice-items", version: "9.0.0" }, "ALICE_ITEMS"),
+        "not_owner",
+    )
+    assert.equal(
+        await codes(bob, { name: "@nobody/thing", version: "1.0.0" }, "BOB_Z"),
+        "wrong_scope",
+    )
+    assert.equal(
+        await codes(alice, { name: "alice-items", version: "1.0.0" }, "ALICE_ITEMS"),
+        "version_exists",
+    )
+    assert.equal(
+        await codes(alice, { name: "alice-items", version: "9.0.0" }, "OTHER_ID"),
+        "bee_id_mismatch",
+    )
+    assert.equal(
+        await codes(bob, { name: "bob-copy", version: "1.0.0" }, "ALICE_ITEMS"),
+        "bee_id_taken",
+    )
+    assert.equal(
+        await codes(
+            alice,
+            { name: "with-deps", version: "1.0.0", dependencies: { "@alice/missing": "*" } },
+            "ALICE_DEPS",
+        ),
+        "unknown_dependency",
+    )
+    const invalid = await check(alice, { name: "x", version: "not-a-version" }, "ALICE_X")
+    assert.equal(invalid.body.error.code, "invalid_package")
+    assert.ok(invalid.body.error.details.problems[0].startsWith("bee-package.json:"))
+})
+
 test("bad packages are rejected with every problem listed", async () => {
     const res = await publish(
         t,

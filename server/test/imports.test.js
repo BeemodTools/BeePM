@@ -84,6 +84,82 @@ test("publishing from a GitHub release the user owns (disallowed files are strip
     assert.equal(needsGithub.body.error.code, "github_not_linked")
 })
 
+test("new GitHub releases are published by themselves once it's turned on", async () => {
+    const { checkGithubWatches } = await import("../src/services/githubWatch.js")
+    const code = t.profile({ provider: "github", username: "Watcher", id: "888" })
+    const { token } = await login(t, code, { handle: "watcher" })
+    const repoUrl = "https://api.github.com/repos/Watcher/Items"
+    t.routes.set(
+        repoUrl,
+        json({ full_name: "Watcher/Items", owner: { id: 888, login: "Watcher", type: "User" } }),
+    )
+
+    /** Makes `tag` the latest release, with a .bee_pack of `version` (GitHub asset id `id`). */
+    const release = async (tag, version, id, { name = "watched-items" } = {}) => {
+        const bytes = await readFile(
+            await makePack(t.dir, { id: "WATCHED_ITEMS", manifest: { name, version } }),
+        )
+        const url = `https://github.com/Watcher/Items/releases/download/${tag}/${id}.bee_pack`
+        t.routes.set(
+            `${repoUrl}/releases/latest`,
+            json({
+                tag_name: tag,
+                assets: [
+                    { id, name: "items.bee_pack", size: bytes.length, browser_download_url: url },
+                ],
+            }),
+        )
+        t.routes.set(url, file(bytes))
+    }
+    const check = () => checkGithubWatches(t.app.deps)
+    const watchPath = "/v1/packages/@watcher/watched-items/github-watch"
+    const watch = async () => (await api(t, token, "GET", watchPath)).body.watch
+    const pkg = "@watcher/watched-items"
+
+    // Publishing from GitHub with watch: true turns it on
+    await release("v1.0.0", "1.0.0", 1)
+    const first = await api(t, token, "POST", "/v1/imports/github", {
+        owner: "Watcher",
+        repo: "Items",
+        watch: true,
+    })
+    assert.equal(first.status, 200, JSON.stringify(first.body))
+    assert.equal(first.body.watching, true)
+    assert.equal((await watch()).repo, "Watcher/Items")
+    assert.deepEqual(await check(), [{ package: pkg, status: "unchanged" }])
+
+    // A new release gets published by itself
+    await release("v1.1.0", "1.1.0", 2)
+    assert.deepEqual(await check(), [{ package: pkg, status: "published", version: "1.1.0" }])
+    assert.equal((await api(t, null, "GET", `/v1/packages/${pkg}`)).body.latest, "1.1.0")
+
+    // One that forgot to raise "version" is refused once, and the owner can see why
+    await release("v1.2.0", "1.1.0", 3)
+    assert.equal((await check())[0].status, "failed")
+    assert.match(
+        (await watch()).error,
+        /Release v1\.2\.0 wasn't published: .*1\.1\.0 already exists/,
+    )
+    assert.equal((await check())[0].status, "unchanged") // not retried every time
+
+    // Replacing the release's .bee_pack with a fixed one is picked up
+    await release("v1.2.0", "1.2.0", 4)
+    assert.equal((await check())[0].status, "published")
+    assert.equal((await watch()).error, null)
+
+    // A release of a different package can't take this one over
+    await release("v1.3.0", "1.3.0", 5, { name: "other-items" })
+    assert.match(
+        (await check())[0].error,
+        /is for @watcher\/other-items, not @watcher\/watched-items/,
+    )
+
+    // Turning it off
+    assert.equal((await api(t, token, "DELETE", watchPath)).status, 200)
+    assert.equal(await watch(), null)
+    assert.deepEqual(await check(), [])
+})
+
 test("importing the old registry creates unclaimed accounts their owners can log in to", async () => {
     const base = "https://legacy.example"
     const strip = await readFile(

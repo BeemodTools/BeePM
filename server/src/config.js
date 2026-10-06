@@ -62,6 +62,11 @@ export function loadConfig(env = process.env) {
         },
         // Optional token for server-side GitHub API calls (release imports, legacy import)
         githubApiToken: env.GITHUB_API_TOKEN || null,
+        // Discord channel webhooks: the moderators' activity log, and new versions (optional)
+        discordLogWebhook: env.DISCORD_LOG_WEBHOOK || null,
+        discordReleasesWebhook: env.DISCORD_RELEASES_WEBHOOK || null,
+        // How often watched GitHub repos are checked for new releases; 0 turns it off
+        githubWatchMinutes: num(env.GITHUB_WATCH_MINUTES, 15),
         // "Continue with a test account" on the login page; never in production.
         // On by default locally when no Discord/GitHub app is configured.
         devLogin:

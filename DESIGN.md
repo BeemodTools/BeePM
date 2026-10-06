@@ -120,7 +120,9 @@ their login link. Pages send `frame-ancestors 'none'` and every form has a CSRF 
 ### Publishing
 
 1. Client checks the file locally (same rules), removes disallowed files, and computes its
-   SHA-256 and size.
+   SHA-256 and size. Then `POST /v1/publish/check {manifest, beeId}` runs the registry's
+   rules (ownership and scope, the BEE2 ID, the version, the dependencies) without a file,
+   so a package that would be refused stops before review and upload.
 2. `POST /v1/uploads {size, sha256}` returns `{id, upload: {method, url, headers}, expiresAt}`.
    This step checks the account age and rate limits.
 3. Client sends the file to `upload.url` (a presigned PUT straight to the bucket; the
@@ -129,10 +131,31 @@ their login link. Pages send `frame-ancestors 'none'` and every form has a CSRF 
    ownership, the BEE2 ID, the version and the dependencies, then move the file to
    `packages/<scope>/<name>/<version>.bee_pack` and create the version.
 
-`POST /v1/imports/github {owner, repo, tag?, asset?}` makes the server fetch a release
+`POST /v1/imports/github {owner, repo, tag?, asset?, watch?}` makes the server fetch a release
 asset and publish it the same way. It requires a linked GitHub identity that owns the
 repo, or is a public member of the org that owns it. Disallowed files are stripped. The
 file is copied into the bucket, so later changes to the GitHub release don't affect it.
+
+With `watch: true` the repo's new releases are published automatically from then on
+(`watch: false` stops it). Every `GITHUB_WATCH_MINUTES` (15) the server checks the latest
+release of each watched package and publishes it as the owner who turned it on, with every
+normal check: their GitHub account must still own the repo, the version must be new, and the
+release's bee-package.json must be for the same package. A release that can't be published is
+recorded (owners see why) and isn't tried again until its .bee_pack is replaced; trouble
+reaching GitHub is retried next time. Without `GITHUB_API_TOKEN` GitHub allows 60 requests an
+hour, so only about a dozen repos are checked each time.
+
+### Discord logs
+
+With `DISCORD_LOG_WEBHOOK` set, the registry posts its activity to that Discord channel:
+publishes, yanks, deprecations, unpublishes, owner changes, bans, removals, new and linked
+accounts, publish tokens, failed automatic GitHub releases and server errors (each error at
+most every 10 minutes). The old-registry import is one message, not one per version. With
+`DISCORD_RELEASES_WEBHOOK` set, new packages and versions are also announced in that
+channel. Messages follow BEE Bot's log style (its `logui.py`): a Components V2 container
+with BEE Bot's colors, a `## Title`, one bold-name block per field, the actor's avatar, a
+`-# ... on | <time>` footer and link buttons, falling back to a classic embed. They're sent
+in the background and never ping anyone; Discord being down never affects a request.
 
 ## API (JSON; errors are `{"error": {"code", "message"}}`)
 
@@ -184,8 +207,9 @@ Publishing and management:
 
 | Method and path | Notes |
 |---|---|
-| `POST /v1/uploads`, `POST /v1/uploads/:id/finalize` | See Publishing |
+| `POST /v1/publish/check`, `POST /v1/uploads`, `POST /v1/uploads/:id/finalize` | See Publishing |
 | `POST /v1/imports/github` | See Publishing |
+| `GET`/`DELETE /v1/packages/:scope/:name/github-watch` | Owners: automatic GitHub releases (repo, last release, error), or stop them |
 | `POST` / `DELETE /v1/packages/:scope/:name/versions/:version/yank` | `{reason}` / unyank |
 | `PUT /v1/packages/:scope/:name/deprecation` | `{message, version?}`; `message: null` clears |
 | `DELETE /v1/packages/:scope/:name/versions/:version` | Unpublish (72-hour window) |

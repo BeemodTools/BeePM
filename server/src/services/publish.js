@@ -77,12 +77,104 @@ async function resolveDependencies(db, manifest) {
 }
 
 /**
+ * The registry's rules for publishing `version` of fullName as `user`: an existing package must
+ * be theirs, keep its BEE2 ID and get a new version number; a new one goes in their own scope
+ * (admins may use any user's) with a BEE2 ID nobody else has. Returns { pkg (null when new),
+ * ownerId }. With lock, the package row stays locked until the transaction ends.
+ */
+async function checkTarget(
+    db,
+    user,
+    { scope, name, fullName, version, beeId },
+    { lock = false } = {},
+) {
+    const { rows } = await db.query(
+        `SELECT * FROM packages WHERE scope = $1 AND name = $2${lock ? " FOR UPDATE" : ""}`,
+        [scope, name],
+    )
+    const pkg = rows[0] ?? null
+    let ownerId = user.id
+
+    if (pkg) {
+        if (pkg.removed_at)
+            throw forbidden(`${fullName} was removed by an admin.`, "package_removed")
+        const { rows: owner } = await db.query(
+            "SELECT 1 FROM package_owners WHERE package_id = $1 AND user_id = $2",
+            [pkg.id, user.id],
+        )
+        if (!owner.length && user.role !== "admin") {
+            throw forbidden(`You're not an owner of ${fullName}.`, "not_owner")
+        }
+        if (pkg.bee_id.toUpperCase() !== beeId) {
+            throw conflict(
+                `${fullName} has the BEE2 ID ${pkg.bee_id}, but this file's info.txt says ${beeId}. Every version must keep the same ID.`,
+                "bee_id_mismatch",
+            )
+        }
+        const { rows: existing } = await db.query(
+            "SELECT unpublished_at FROM versions WHERE package_id = $1 AND version = $2",
+            [pkg.id, version],
+        )
+        if (existing.length) {
+            throw conflict(
+                existing[0].unpublished_at
+                    ? `${fullName}@${version} was unpublished, and version numbers can't be reused. Bump "version" in bee-package.json.`
+                    : `${fullName}@${version} already exists. Bump "version" in bee-package.json.`,
+                "version_exists",
+            )
+        }
+    } else {
+        if (scope !== user.handle) {
+            const scopeUser = user.role === "admin" ? await findUserByHandle(db, scope) : null
+            if (!scopeUser) {
+                throw forbidden(
+                    `You can only create packages under @${user.handle}, not @${scope}. Change "name" or "author" in bee-package.json.`,
+                    "wrong_scope",
+                )
+            }
+            ownerId = scopeUser.id
+        }
+        const { rows: taken } = await db.query(
+            "SELECT scope, name FROM packages WHERE upper(bee_id) = $1",
+            [beeId],
+        )
+        if (taken.length) {
+            throw conflict(
+                `The BEE2 ID ${beeId} is already used by ${formatName(taken[0].scope, taken[0].name)}. BEE2 can't load two packages with the same ID, so change "ID" in info.txt.`,
+                "bee_id_taken",
+            )
+        }
+    }
+    return { pkg, ownerId }
+}
+
+/**
+ * Whether `user` could publish this (validated) bee-package.json for a package whose info.txt
+ * has `beeId`: everything publishFile checks except the file itself, so clients can stop before
+ * uploading anything. Returns { name, version, created } or throws what publishing would.
+ */
+export async function checkPublishable(db, user, manifest, beeId) {
+    const scope = manifest.scope
+    const fullName = formatName(scope, manifest.name)
+    const { pkg } = await checkTarget(db, user, {
+        scope,
+        name: manifest.name,
+        fullName,
+        version: manifest.version,
+        beeId,
+    })
+    await resolveDependencies(db, manifest)
+    return { name: fullName, version: manifest.version, created: !pkg }
+}
+
+/**
  * Publishes a .bee_pack that's already on this server's disk as a new version.
  *   user        who is publishing (row from users, or the request user)
  *   filePath    the file; sha256/size are checked against it if given
  *   source      stored with the version, e.g. { type: "upload" } or { type: "github", ... }
  *   stagingKey  if set, the file is already in the bucket there and gets copied (no re-upload)
  *   strip       remove disallowed files instead of rejecting them (GitHub imports)
+ *   expectName  refuse the file unless it's this package (automatic GitHub releases)
  *   publishedAt / skipDependencyCheck / allowLegacy / forceScope: used by the old-registry import only
  * Returns { name, version, created, strippedFiles }.
  */
@@ -125,6 +217,12 @@ export async function publishFile(deps, options) {
     const scope = options.forceScope ?? manifest.scope
     const { name, version } = manifest
     const fullName = formatName(scope, name)
+    if (options.expectName && fullName !== options.expectName) {
+        throw badRequest(
+            `its bee-package.json is for ${fullName}, not ${options.expectName}.`,
+            "wrong_package",
+        )
+    }
     const dependencies = options.skipDependencyCheck
         ? manifest.dependencies
         : await resolveDependencies(db, manifest)
@@ -133,53 +231,15 @@ export async function publishFile(deps, options) {
 
     try {
         const result = await db.tx(async (tx) => {
-            const { rows } = await tx.query(
-                "SELECT * FROM packages WHERE scope = $1 AND name = $2 FOR UPDATE",
-                [scope, name],
+            const target = await checkTarget(
+                tx,
+                user,
+                { scope, name, fullName, version, beeId },
+                { lock: true },
             )
-            let pkg = rows[0]
+            let pkg = target.pkg
             let created = false
-
-            if (pkg) {
-                if (pkg.removed_at)
-                    throw forbidden(`${fullName} was removed by an admin.`, "package_removed")
-                const { rows: owner } = await tx.query(
-                    "SELECT 1 FROM package_owners WHERE package_id = $1 AND user_id = $2",
-                    [pkg.id, user.id],
-                )
-                if (!owner.length && user.role !== "admin") {
-                    throw forbidden(`You're not an owner of ${fullName}.`, "not_owner")
-                }
-                if (pkg.bee_id.toUpperCase() !== beeId) {
-                    throw conflict(
-                        `${fullName} has the BEE2 ID ${pkg.bee_id}, but this file's info.txt says ${beeId}. Every version must keep the same ID.`,
-                        "bee_id_mismatch",
-                    )
-                }
-            } else {
-                // New package: it goes in the publisher's own scope (admins may use any user's scope)
-                let ownerId = user.id
-                if (scope !== user.handle) {
-                    const scopeUser =
-                        user.role === "admin" ? await findUserByHandle(tx, scope) : null
-                    if (!scopeUser) {
-                        throw forbidden(
-                            `You can only create packages under @${user.handle}, not @${scope}. Change "name" or "author" in bee-package.json.`,
-                            "wrong_scope",
-                        )
-                    }
-                    ownerId = scopeUser.id
-                }
-                const { rows: taken } = await tx.query(
-                    "SELECT scope, name FROM packages WHERE upper(bee_id) = $1",
-                    [beeId],
-                )
-                if (taken.length) {
-                    throw conflict(
-                        `The BEE2 ID ${beeId} is already used by ${formatName(taken[0].scope, taken[0].name)}. BEE2 can't load two packages with the same ID, so change "ID" in info.txt.`,
-                        "bee_id_taken",
-                    )
-                }
+            if (!pkg) {
                 const { rows: inserted } = await tx.query(
                     `INSERT INTO packages (scope, name, bee_id, display_name, description)
                      VALUES ($1, $2, $3, $4, $5) RETURNING *`,
@@ -195,20 +255,7 @@ export async function publishFile(deps, options) {
                 created = true
                 await tx.query(
                     "INSERT INTO package_owners (package_id, user_id, added_by) VALUES ($1, $2, $3)",
-                    [pkg.id, ownerId, user.id],
-                )
-            }
-
-            const { rows: existing } = await tx.query(
-                "SELECT unpublished_at FROM versions WHERE package_id = $1 AND version = $2",
-                [pkg.id, version],
-            )
-            if (existing.length) {
-                throw conflict(
-                    existing[0].unpublished_at
-                        ? `${fullName}@${version} was unpublished, and version numbers can't be reused. Bump "version" in bee-package.json.`
-                        : `${fullName}@${version} already exists. Bump "version" in bee-package.json.`,
-                    "version_exists",
+                    [pkg.id, target.ownerId, user.id],
                 )
             }
 
@@ -258,6 +305,9 @@ export async function publishFile(deps, options) {
             sha256,
             size,
             strippedFiles,
+            created: result.created,
+            // The old-registry import: not announced version by version
+            ...(options.allowLegacy ? { imported: true } : {}),
         })
         return { ...result, strippedFiles, sha256, size }
     } catch (err) {

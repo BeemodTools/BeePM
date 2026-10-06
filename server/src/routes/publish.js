@@ -1,9 +1,11 @@
+import { MANIFEST_FILE, ManifestError, validateManifest } from "@beepm/core"
 import { requireUser } from "../auth/guard.js"
 import { badRequest, conflict, forbidden, notFound, tooMany } from "../lib/errors.js"
 import { randomId } from "../lib/ids.js"
 import { withTemp } from "../lib/tmp.js"
-import { createGithubApi } from "../services/github.js"
-import { publishFile } from "../services/publish.js"
+import { checkRepoAccess, createGithubApi } from "../services/github.js"
+import { releaseKey, setGithubWatch } from "../services/githubWatch.js"
+import { checkPublishable, publishFile } from "../services/publish.js"
 import { publishEligibility } from "../services/users.js"
 import { uploadKey } from "../storage/index.js"
 
@@ -144,10 +146,34 @@ export default async function publishRoutes(app) {
         }
     })
 
-    // Publish a .bee_pack attached to a GitHub release the user owns
+    // Before uploading: would this bee-package.json (and info.txt's BEE2 ID) be accepted?
+    // Runs every check publishing runs except on the file itself.
+    app.post("/v1/publish/check", async (request) => {
+        const user = await requirePublisher(request)
+        const { manifest, beeId } = request.body || {}
+        if (typeof beeId !== "string" || !beeId.trim() || beeId.length > 200) {
+            throw badRequest("beeId must be the ID from info.txt.")
+        }
+        let checked
+        try {
+            checked = validateManifest(manifest, { defaultScope: user.handle })
+        } catch (err) {
+            if (!(err instanceof ManifestError)) throw err
+            throw badRequest(err.message, "invalid_package", {
+                problems: err.problems.map((p) => `${MANIFEST_FILE}: ${p}`),
+            })
+        }
+        return checkPublishable(db, user, checked, beeId.trim().toUpperCase())
+    })
+
+    // Publish a .bee_pack attached to a GitHub release the user owns. watch: true also publishes
+    // the repo's new releases automatically from now on; false stops that.
     app.post("/v1/imports/github", async (request) => {
         const user = await requirePublisher(request)
-        const { owner, repo, tag, asset } = request.body || {}
+        const { owner, repo, tag, asset, watch } = request.body || {}
+        if (watch !== undefined && typeof watch !== "boolean") {
+            throw badRequest("watch must be true or false.")
+        }
         if (!GITHUB_NAME.test(owner || "") || !GITHUB_NAME.test(repo || "")) {
             throw badRequest(
                 "Give the repository as owner and repo, e.g. Areng14 and ArengBeemodPackages.",
@@ -161,39 +187,8 @@ export default async function publishRoutes(app) {
             throw badRequest("tag must be a release tag.")
         }
 
-        const { rows: identities } = await db.query(
-            "SELECT provider_id FROM identities WHERE user_id = $1 AND provider = 'github'",
-            [user.id],
-        )
-        if (!identities.length && user.role !== "admin") {
-            throw forbidden(
-                "Link a GitHub account to publish from GitHub releases.",
-                "github_not_linked",
-            )
-        }
-
         const gh = createGithubApi(app.deps.fetch, config.githubApiToken)
-        const repoInfo = await gh.json(`/repos/${owner}/${repo}`)
-        if (!repoInfo)
-            throw notFound(`GitHub repository ${owner}/${repo} doesn't exist or isn't public.`)
-
-        const githubId = identities[0]?.provider_id
-        let allowed = user.role === "admin" || String(repoInfo.owner.id) === githubId
-        if (!allowed && githubId && repoInfo.owner.type === "Organization") {
-            const me = await gh.json(`/user/${githubId}`)
-            if (me) {
-                const status = await gh.status(
-                    `/orgs/${repoInfo.owner.login}/public_members/${me.login}`,
-                )
-                allowed = status === 204
-            }
-        }
-        if (!allowed) {
-            throw forbidden(
-                `Your linked GitHub account doesn't own ${repoInfo.full_name}. For an organization's repository, make your membership of the organization public.`,
-                "not_repo_owner",
-            )
-        }
+        const repoInfo = await checkRepoAccess({ db, gh }, user, owner, repo)
 
         const release = await gh.json(
             tag
@@ -256,7 +251,18 @@ export default async function publishRoutes(app) {
                 id,
                 JSON.stringify(result),
             ])
-            return result
+            if (watch === undefined) return result
+            await setGithubWatch(
+                db,
+                result.name,
+                watch && {
+                    repo: repoInfo.full_name,
+                    asset: chosen.name,
+                    userId: user.id,
+                    handled: releaseKey(release, chosen),
+                },
+            )
+            return { ...result, watching: watch }
         } catch (err) {
             await db.query("UPDATE uploads SET status = 'failed', error = $2 WHERE id = $1", [
                 id,

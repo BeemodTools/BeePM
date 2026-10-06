@@ -159,7 +159,12 @@ test("login, publish, install, update, uninstall through the CLI", async () => {
     assert.match(dry.out, /@maker\/lib@1\.0\.0/)
     assert.match(dry.out, /notes\.md/)
 
-    const published = await beepm("publish", lib)
+    const notAgreed = await beepm("publish", lib)
+    assert.equal(notAgreed.code, 1)
+    assert.match(notAgreed.out, /By publishing, you agree that/)
+    assert.match(notAgreed.out, /Not published/)
+
+    const published = await beepm("publish", lib, "--yes")
     assert.equal(published.code, 0, published.out)
     assert.match(published.out, /Published @maker\/lib@1\.0\.0 \(new package\)/)
 
@@ -171,7 +176,7 @@ test("login, publish, install, update, uninstall through the CLI", async () => {
             dependencies: { "@maker/lib": "^1.0.0", "@beemod/BEE2_CLEAN_STYLE": "*" },
         },
     })
-    assert.equal((await beepm("publish", app1)).code, 0)
+    assert.equal((await beepm("publish", app1, "--yes")).code, 0)
     assert.match((await beepm("search", "maker")).out, /@maker\/app/)
     assert.match((await beepm("info", "app")).out, /BEE2 ID: MAKER_APP/)
 
@@ -190,7 +195,7 @@ test("login, publish, install, update, uninstall through the CLI", async () => {
         path.join(lib, "bee-package.json"),
         JSON.stringify({ name: "lib", version: "1.1.0" }),
     )
-    assert.equal((await beepm("publish", lib)).code, 0)
+    assert.equal((await beepm("publish", lib, "--yes")).code, 0)
     assert.match((await beepm("outdated")).out, /@maker\/lib\s+1\.0\.0\s+1\.1\.0/)
     const updated = await beepm("update")
     assert.equal(updated.code, 0, updated.out)

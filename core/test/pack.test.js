@@ -1,7 +1,10 @@
 import assert from "node:assert/strict"
-import { copyFile, mkdir, writeFile } from "node:fs/promises"
+import { createWriteStream } from "node:fs"
+import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
+import { pipeline } from "node:stream/promises"
 import { after, before, test } from "node:test"
+import yazl from "yazl"
 import {
     checkPack,
     hashFile,
@@ -147,4 +150,94 @@ test("putFileInZip adds bee-package.json without touching the other files", asyn
     const notZip = path.join(tmp.dir, "not-a-zip.bee_pack")
     await writeFile(notZip, "nope")
     await assert.rejects(putFileInZip(notZip, "bee-package.json", "{}"), PackError)
+})
+
+/** Changes the bytes of the central directory record of entry `index`, then saves the zip. */
+async function patchCentralRecord(file, index, patch) {
+    const bytes = await readFile(file)
+    const records = []
+    for (let at = bytes.indexOf("PK\x01\x02"); at >= 0; at = bytes.indexOf("PK\x01\x02", at + 4)) {
+        records.push(at)
+    }
+    patch(bytes, records[index], records)
+    await writeFile(file, bytes)
+    return file
+}
+
+/** Writes a zip whose entries are [name, content] pairs (so a name can appear twice). */
+async function zipOfEntries(filePath, entries) {
+    const zip = new yazl.ZipFile()
+    const written = pipeline(zip.outputStream, createWriteStream(filePath))
+    for (const [name, content] of entries) zip.addBuffer(Buffer.from(content), name)
+    zip.end()
+    await written
+    return filePath
+}
+
+test("zip bombs and other unsafe zips are refused before anything is unpacked", async () => {
+    const at = (name) => path.join(tmp.dir, name)
+
+    // One file that shrinks far too much: 20 MB of zeros
+    const ratio = await makeZip(at("ratio.bee_pack"), {
+        ...packFiles(),
+        "resources/sound/silence.wav": Buffer.alloc(20 * 1024 * 1024),
+    })
+    await assert.rejects(checkPack(ratio), /zip bomb: "resources\/sound\/silence\.wav" unpacks/)
+
+    // Too much in total (the limit is lowered here to keep the test small)
+    const big = await makeZip(at("big.bee_pack"), packFiles())
+    await assert.rejects(readPack(big, { maxUnpackedBytes: 50 }), /unpacks to more than/)
+
+    // Two entries sharing the same data (how the biggest zip bombs work)
+    const overlap = await patchCentralRecord(
+        await makeZip(at("overlap.bee_pack"), packFiles()),
+        1,
+        (bytes, record, records) =>
+            bytes.writeUInt32LE(bytes.readUInt32LE(records[0] + 42), record + 42),
+    )
+    await assert.rejects(readPack(overlap), /zip bomb: its files overlap/)
+
+    // The same file twice, or two info.txt files BEE2 might choose between differently
+    const twice = await zipOfEntries(at("twice.bee_pack"), [
+        ["items/a.txt", "1"],
+        ["items/a.txt", "2"],
+    ])
+    await assert.rejects(readPack(twice), /"items\/a\.txt" is in it twice/)
+    const twoInfos = await zipOfEntries(at("two-infos.bee_pack"), [
+        ["info.txt", '"ID" "ONE"'],
+        ["INFO.TXT", '"ID" "TWO"'],
+    ])
+    await assert.rejects(readPack(twoInfos), /more than one info\.txt/)
+
+    // Names Windows can't use (BEE2 unpacks resources when exporting)
+    for (const name of ["items/bad|name.txt", "resources/NUL.vmt", "items/a:b.txt"]) {
+        const file = await makeZip(at("names.bee_pack"), { ...packFiles(), [name]: "x" })
+        await assert.rejects(readPack(file), /isn't a file name Windows can use/, name)
+    }
+
+    // Encrypted files, symbolic links, and compression BeePM can't read
+    const encrypted = await patchCentralRecord(
+        await makeZip(at("encrypted.bee_pack"), packFiles()),
+        0,
+        (bytes, record) => bytes.writeUInt16LE(bytes.readUInt16LE(record + 8) | 1, record + 8),
+    )
+    await assert.rejects(readPack(encrypted), /is encrypted/)
+    const symlink = await patchCentralRecord(
+        await makeZip(at("symlink.bee_pack"), packFiles()),
+        0,
+        (bytes, record) => bytes.writeUInt32LE((0o120777 << 16) >>> 0, record + 38),
+    )
+    await assert.rejects(readPack(symlink), /is a symbolic link/)
+    const bzip2 = await patchCentralRecord(
+        await makeZip(at("bzip2.bee_pack"), packFiles()),
+        0,
+        (bytes, record) => bytes.writeUInt16LE(12, record + 10),
+    )
+    await assert.rejects(readPack(bzip2), /compression BeePM can't read/)
+
+    // And an ordinary package still passes
+    assert.equal(
+        (await checkPack(await makeZip(at("fine.bee_pack"), packFiles()))).beeId,
+        "TEST_PACK",
+    )
 })

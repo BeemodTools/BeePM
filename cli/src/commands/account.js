@@ -127,7 +127,7 @@ export function register(program) {
                 `Created token "${name}" (expires ${formatDate(created.expiresAt)}). Copy it now, it won't be shown again:`,
             )
             info(created.token)
-            info(color.dim("Use it with BEEPM_TOKEN=<token> beepm publish"))
+            info(color.dim("Use it with BEEPM_TOKEN=<token> beepm publish --yes"))
         })
     token
         .command("revoke <id>")

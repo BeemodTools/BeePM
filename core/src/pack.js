@@ -39,8 +39,14 @@ export const ALLOWED_EXTENSIONS = new Set([
     ".nut",
 ])
 export const MAX_ENTRIES = 50000
+/** A package that unpacks to more than this is refused: no real BEE2 package comes close. */
+export const MAX_UNPACKED_BYTES = 2 * 1024 ** 3
 const MAX_INFO_BYTES = 1024 * 1024
 const MAX_MANIFEST_BYTES = 256 * 1024
+// A big file that shrank more than this is a zip bomb, not a texture or a sound
+const MAX_RATIO = 200
+const RATIO_CHECK_BYTES = 16 * 1024 * 1024
+const MAX_NAME_LENGTH = 400
 
 export const isAllowedFile = (fileName) =>
     ALLOWED_EXTENSIONS.has(path.posix.extname(fileName).toLowerCase())
@@ -62,6 +68,55 @@ export async function hashFile(filePath) {
 }
 
 const LZMA = 14
+const READABLE_METHODS = new Set([0, 8, LZMA]) // stored, deflate, LZMA
+const WINDOWS_RESERVED = /^(con|prn|aux|nul|com\d|lpt\d)(\..*)?$/i
+const S_IFMT = 0o170000
+const S_IFLNK = 0o120000
+
+const megabytes = (bytes) => `${Math.max(1, Math.round(bytes / 1024 ** 2))} MB`
+
+/**
+ * Why a zip entry makes a .bee_pack unsafe to accept, or null: zip bomb tricks, files BeePM
+ * can't read, and names BEE2 couldn't unpack on Windows (it unpacks resources when exporting).
+ * yauzl already refuses absolute paths and "..".
+ */
+function entryProblem(entry) {
+    const name = entry.fileName
+    if (name.length > MAX_NAME_LENGTH) {
+        return `a file name is longer than ${MAX_NAME_LENGTH} characters`
+    }
+    if (
+        /[<>:"|?*\\]/.test(name) ||
+        [...name].some((char) => char.charCodeAt(0) < 32) ||
+        name.split("/").some((part) => WINDOWS_RESERVED.test(part))
+    ) {
+        return `"${name}" isn't a file name Windows can use`
+    }
+    if (entry.generalPurposeBitFlag & 0x1) return `"${name}" is encrypted`
+    if (((entry.externalFileAttributes >>> 16) & S_IFMT) === S_IFLNK) {
+        return `"${name}" is a symbolic link`
+    }
+    if (!READABLE_METHODS.has(entry.compressionMethod)) {
+        return `"${name}" uses a kind of compression BeePM can't read (save the zip with Deflate)`
+    }
+    if (
+        entry.uncompressedSize > RATIO_CHECK_BYTES &&
+        entry.uncompressedSize > entry.compressedSize * MAX_RATIO
+    ) {
+        return `it looks like a zip bomb: "${name}" unpacks from ${megabytes(entry.compressedSize)} to ${megabytes(entry.uncompressedSize)}`
+    }
+    return null
+}
+
+/** True if two entries' data overlap: a zip bomb trick (many files sharing the same data). */
+function overlaps(extents) {
+    const sorted = extents.filter(([, size]) => size > 0).sort((a, b) => a[0] - b[0])
+    for (let i = 1; i < sorted.length; i++) {
+        const [offset, size] = sorted[i - 1]
+        if (sorted[i][0] < offset + size) return true
+    }
+    return false
+}
 
 /**
  * Zip's LZMA entries: 2 bytes of version, 2 bytes of properties length, the properties, then
@@ -102,9 +157,10 @@ async function readEntryText(zipfile, entry, maxBytes, label) {
 
 /**
  * Lists a .bee_pack's files without extracting it, and reads info.txt and
- * bee-package.json from its root (matched case-insensitively).
+ * bee-package.json from its root (matched case-insensitively). Refuses zip bombs and other
+ * unsafe zips (see entryProblem) before unpacking anything.
  */
-export async function readPack(filePath) {
+export async function readPack(filePath, { maxUnpackedBytes = MAX_UNPACKED_BYTES } = {}) {
     let zipfile
     try {
         zipfile = await yauzl.openPromise(filePath, { lazyEntries: true, autoClose: false })
@@ -114,22 +170,43 @@ export async function readPack(filePath) {
 
     const files = []
     const disallowed = []
+    const names = new Set()
+    const extents = [] // [offset, compressed size] of every entry, to spot overlapping data
     let uncompressedSize = 0
     let infoEntry = null
     let manifestEntry = null
     try {
         for await (const entry of zipfile.eachEntry()) {
+            const problem = entryProblem(entry)
+            if (problem) throw new PackError([problem])
+            if (names.has(entry.fileName)) {
+                throw new PackError([`"${entry.fileName}" is in it twice`])
+            }
+            names.add(entry.fileName)
+            extents.push([entry.relativeOffsetOfLocalHeader, entry.compressedSize])
             if (entry.fileName.endsWith("/")) continue
             if (files.length >= MAX_ENTRIES) {
                 throw new PackError([`it has more than ${MAX_ENTRIES} files`])
             }
             files.push(entry.fileName)
             uncompressedSize += entry.uncompressedSize
+            if (uncompressedSize > maxUnpackedBytes) {
+                throw new PackError([
+                    `it unpacks to more than ${megabytes(maxUnpackedBytes)}, which is too big`,
+                ])
+            }
             const lower = entry.fileName.toLowerCase()
-            if (lower === "info.txt") infoEntry = entry
-            else if (lower === MANIFEST_FILE) manifestEntry = entry
+            // Two of them (e.g. info.txt and INFO.TXT) could mean BEE2 reads a different one
+            if (lower === "info.txt") {
+                if (infoEntry) throw new PackError(["it has more than one info.txt"])
+                infoEntry = entry
+            } else if (lower === MANIFEST_FILE) {
+                if (manifestEntry) throw new PackError([`it has more than one ${MANIFEST_FILE}`])
+                manifestEntry = entry
+            }
             if (!isAllowedFile(entry.fileName)) disallowed.push(entry.fileName)
         }
+        if (overlaps(extents)) throw new PackError(["it looks like a zip bomb: its files overlap"])
         const infoText = infoEntry
             ? await readEntryText(zipfile, infoEntry, MAX_INFO_BYTES, "info.txt")
             : null

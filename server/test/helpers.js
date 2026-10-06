@@ -50,11 +50,11 @@ export async function setup(env = {}) {
         discord: fakeProvider("discord", "Discord", profiles),
         github: fakeProvider("github", "GitHub", profiles),
     }
-    const routes = new Map() // url -> () => Response
-    const fakeFetch = async (url) => {
+    const routes = new Map() // url -> (init, url) => Response
+    const fakeFetch = async (url, init = {}) => {
         const handler = routes.get(String(url))
         if (!handler) return new Response("not found", { status: 404 })
-        return handler()
+        return handler(init, String(url))
     }
     const app = await buildApp({ config, db, storage, providers, fetch: fakeFetch, logger: false })
 

@@ -1,6 +1,7 @@
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
+import semver from "semver"
 import { bee2Semver } from "../compat.js"
 import { readInfoTxt } from "../infotxt.js"
 import { MANIFEST_FILE } from "../manifest.js"
@@ -53,6 +54,23 @@ export async function preparePublish(input, { handle = null } = {}) {
 }
 
 /**
+ * Asks the registry whether a prepared package would be accepted (owner, handle, version,
+ * BEE2 ID, dependencies) without uploading it. Throws the RegistryError publishing would.
+ */
+export function checkWithRegistry(api, prepared) {
+    const m = prepared.manifest
+    return api.checkPublish({
+        manifest: {
+            name: m.fullName,
+            version: m.version,
+            ...(m.compatibleWith ? { compatibleWith: m.compatibleWith } : {}),
+            dependencies: m.dependencies,
+        },
+        beeId: prepared.beeId,
+    })
+}
+
+/**
  * Uploads a prepared package and publishes it. onProgress(sentBytes, totalBytes).
  * Returns the registry's answer: { name, version, created, strippedFiles, sha256, size }.
  */
@@ -66,7 +84,10 @@ export async function publishPrepared(api, prepared, { onProgress } = {}) {
  * Suggests a bee-package.json for a package folder or .bee_pack, from its info.txt:
  * name and title from "Name", and dependencies from "Prerequisites" (BEE2's own packages
  * become @beemod/<ID>; others are looked up in the registry by ID).
- * Returns { manifest, existing } where existing is the current bee-package.json, if any.
+ * If a package with the same BEE2 ID is already published (IDs are unique), this is a new
+ * version of it: its name is suggested, with the version after its newest one.
+ * Returns { manifest, existing, published } where existing is the current bee-package.json,
+ * if any, and published is { name, latest } for that package (or null).
  */
 export async function suggestManifest(ctx, input, { handle = null, bee2Version = null } = {}) {
     let infoText = null
@@ -97,16 +118,32 @@ export async function suggestManifest(ctx, input, { handle = null, bee2Version =
         dependencies[packages.length === 1 ? packages[0] : `@${BUILTIN_SCOPE}/${id}`] = "*"
     }
 
+    let published = null
+    if (ctx.api) {
+        const { packages } = await ctx.api
+            .lookup({ beeId: info.id })
+            .catch(() => ({ packages: [] }))
+        if (packages.length === 1) {
+            const doc = await ctx.api.packument(packages[0]).catch(() => null)
+            const latest =
+                Object.keys(doc?.versions ?? {})
+                    .filter((v) => semver.valid(v))
+                    .sort(semver.rcompare)[0] ?? null
+            published = { name: packages[0], latest }
+        }
+    }
+
     const version = bee2Semver(bee2Version)
     return {
         manifest: {
-            name: handle ? `@${handle}/${name}` : name,
-            version: "1.0.0",
+            name: published?.name ?? (handle ? `@${handle}/${name}` : name),
+            version: published?.latest ? semver.inc(published.latest, "patch") : "1.0.0",
             display_name: title,
             description: info.description ? info.description.slice(0, 2000) : "",
             compatibleWith: version ? `>=${version}` : ">=2.4.41",
             dependencies,
         },
         existing,
+        published,
     }
 }

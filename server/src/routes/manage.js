@@ -12,9 +12,46 @@ const message = (value, max) => {
     return value.trim().slice(0, max)
 }
 
-/** Owner actions: yank, deprecate, unpublish, and managing owners. */
+/** Owner actions: yank, deprecate, unpublish, managing owners, and automatic GitHub releases. */
 export default async function manageRoutes(app) {
     const { db, config, storage } = app.deps
+
+    async function ownedPackage(request) {
+        const user = await requireUser(request)
+        const pkg = await requirePackage(db, request.params.scope, request.params.name)
+        await requireOwner(db, pkg, user)
+        return { user, pkg }
+    }
+
+    // Publishing new releases of a GitHub repo automatically (turned on when publishing from it)
+    app.get("/v1/packages/:scope/:name/github-watch", async (request) => {
+        const { pkg } = await ownedPackage(request)
+        const { rows } = await db.query(
+            `SELECT w.repo, w.asset, w.handled, w.checked_at, w.error, u.handle
+               FROM github_watches w JOIN users u ON u.id = w.user_id WHERE w.package_id = $1`,
+            [pkg.id],
+        )
+        const watch = rows[0]
+        return {
+            watch: watch
+                ? {
+                      repo: watch.repo,
+                      asset: watch.asset,
+                      release: watch.handled?.split(" ")[0] ?? null,
+                      checkedAt: watch.checked_at,
+                      error: watch.error,
+                      by: watch.handle,
+                  }
+                : null,
+        }
+    })
+
+    app.delete("/v1/packages/:scope/:name/github-watch", async (request) => {
+        const { user, pkg } = await ownedPackage(request)
+        await db.query("DELETE FROM github_watches WHERE package_id = $1", [pkg.id])
+        await audit(db, user.id, "package.github_watch.stop", formatName(pkg.scope, pkg.name))
+        return { ok: true }
+    })
 
     async function ownedVersion(request) {
         const user = await requireUser(request)

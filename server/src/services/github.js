@@ -1,6 +1,7 @@
 import { createWriteStream } from "node:fs"
 import { Readable, Transform } from "node:stream"
 import { pipeline } from "node:stream/promises"
+import { forbidden, notFound } from "../lib/errors.js"
 
 /** Minimal GitHub REST client used for release imports and the old-registry import. */
 export function createGithubApi(fetchImpl, token = null) {
@@ -45,4 +46,44 @@ export function createGithubApi(fetchImpl, token = null) {
             return received
         },
     }
+}
+
+/**
+ * Whether `user` may publish from GitHub repository owner/repo: their linked GitHub account owns
+ * it, or is a public member of the organization that does (admins may use any public repo).
+ * Returns the repo's info from GitHub; throws an ApiError otherwise.
+ */
+export async function checkRepoAccess({ db, gh }, user, owner, repo) {
+    const { rows: identities } = await db.query(
+        "SELECT provider_id FROM identities WHERE user_id = $1 AND provider = 'github'",
+        [user.id],
+    )
+    if (!identities.length && user.role !== "admin") {
+        throw forbidden(
+            "Link a GitHub account to publish from GitHub releases.",
+            "github_not_linked",
+        )
+    }
+    const repoInfo = await gh.json(`/repos/${owner}/${repo}`)
+    if (!repoInfo)
+        throw notFound(`GitHub repository ${owner}/${repo} doesn't exist or isn't public.`)
+
+    const githubId = identities[0]?.provider_id
+    let allowed = user.role === "admin" || String(repoInfo.owner.id) === githubId
+    if (!allowed && githubId && repoInfo.owner.type === "Organization") {
+        const me = await gh.json(`/user/${githubId}`)
+        if (me) {
+            const status = await gh.status(
+                `/orgs/${repoInfo.owner.login}/public_members/${me.login}`,
+            )
+            allowed = status === 204
+        }
+    }
+    if (!allowed) {
+        throw forbidden(
+            `Your linked GitHub account doesn't own ${repoInfo.full_name}. For an organization's repository, make your membership of the organization public.`,
+            "not_repo_owner",
+        )
+    }
+    return repoInfo
 }

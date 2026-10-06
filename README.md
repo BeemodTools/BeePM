@@ -51,7 +51,8 @@ beepm login                       # Discord or GitHub, in your browser
 beepm search items
 beepm install @areng14/arengitems # or just: beepm install arengitems
 beepm update
-beepm publish ./MyPackage         # a folder or a .bee_pack; add --dry-run to only check it
+beepm publish ./MyPackage         # a folder or a .bee_pack; --dry-run only checks it,
+                                  # --yes agrees to the publishing rules without asking
 beepm publish --github Areng14/ArengBeemodPackages
 beepm new ./MyPackage             # writes bee-package.json from info.txt
 ```

@@ -1,7 +1,21 @@
 import { stat, writeFile } from "node:fs/promises"
 import path from "node:path"
-import { formatName, MANIFEST_FILE, PackError, parseSpec, putFileInZip } from "@beepm/core"
-import { loadConfig, preparePublish, publishPrepared, suggestManifest } from "@beepm/core/client"
+import {
+    formatName,
+    MANIFEST_FILE,
+    PackError,
+    parseSpec,
+    PUBLISH_RULES,
+    putFileInZip,
+} from "@beepm/core"
+import {
+    checkWithRegistry,
+    loadConfig,
+    preparePublish,
+    publishPrepared,
+    RegistryError,
+    suggestManifest,
+} from "@beepm/core/client"
 import { CliError, getContext, requireLogin } from "../context.js"
 import { color, confirm, formatBytes, info, ok, progress, warn } from "../output.js"
 
@@ -12,6 +26,16 @@ function nameAndVersion(spec) {
         throw new CliError(`Write it as @scope/name@version, e.g. @areng14/arengitems@1.0.0`)
     }
     return { name: formatName(parsed.scope, parsed.name), version: parsed.range }
+}
+
+/** Shows the publishing rules and asks to agree, unless --yes already did. */
+async function agreeToRules(options) {
+    if (options.yes) return
+    info(PUBLISH_RULES.intro)
+    for (const item of PUBLISH_RULES.items) info(`  - ${item}`)
+    if (!(await confirm("Do you agree?"))) {
+        throw new CliError("Not published. Publishing needs you to agree to the rules (or --yes).")
+    }
 }
 
 function fullName(spec) {
@@ -29,6 +53,8 @@ export function register(program) {
         .option("--dry-run", "check the package without publishing it")
         .option("--github <owner/repo[@tag]>", "publish the .bee_pack attached to a GitHub release")
         .option("--asset <file>", "which .bee_pack to use if the release has several")
+        .option("--watch", "with --github: publish the repo's new releases automatically too")
+        .option("-y, --yes", "agree to the publishing rules without asking (e.g. in CI)")
         .action(async (input = ".", options) => {
             const ctx = await getContext()
 
@@ -36,19 +62,23 @@ export function register(program) {
                 requireLogin(ctx)
                 const match = /^([^/\s]+)\/([^@\s]+)(?:@(.+))?$/.exec(options.github)
                 if (!match) throw new CliError("Use --github owner/repo or owner/repo@tag")
+                await agreeToRules(options)
                 info(`Publishing from GitHub release ${options.github}...`)
                 const result = await ctx.api.importGithub({
                     owner: match[1],
                     repo: match[2],
                     tag: match[3],
                     asset: options.asset,
+                    watch: options.watch ? true : undefined,
                 })
                 if (result.strippedFiles?.length) {
                     warn(
                         `Left out ${result.strippedFiles.length} file(s) of types packages can't include.`,
                     )
                 }
-                return ok(`Published ${color.bold(`${result.name}@${result.version}`)}`)
+                ok(`Published ${color.bold(`${result.name}@${result.version}`)}`)
+                if (result.watching) info("Its new releases will be published automatically.")
+                return
             }
 
             const handle = ctx.login?.user?.handle ?? null
@@ -82,10 +112,23 @@ export function register(program) {
                         `Removed ${prepared.stripped.length} file(s) of types packages can't include: ${prepared.stripped.slice(0, 8).join(", ")}${prepared.stripped.length > 8 ? ", ..." : ""}`,
                     )
                 }
+                // The registry's rules too (owner, version, BEE2 ID...), before uploading anything
+                if (ctx.login) {
+                    try {
+                        await checkWithRegistry(ctx.api, prepared)
+                    } catch (err) {
+                        const unchecked =
+                            err instanceof RegistryError &&
+                            (!err.status || err.status === 404 || err.status >= 500)
+                        if (!unchecked) throw err
+                        warn(`The registry couldn't check it yet: ${err.message}`)
+                    }
+                }
                 if (options.dryRun)
                     return ok("The package passed every check. (Dry run: nothing was published.)")
 
                 requireLogin(ctx)
+                await agreeToRules(options)
                 const bar = progress("Uploading")
                 const result = await publishPrepared(ctx.api, prepared, {
                     onProgress: (sent, total) => bar.update(sent, total),
