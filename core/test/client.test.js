@@ -8,6 +8,7 @@ import {
     beepmPaths,
     getIniValue,
     hookBee2,
+    installBasePackages,
     InstallError,
     planInstall,
     removeIniKey,
@@ -16,7 +17,10 @@ import {
     setIniValue,
     unhookBee2,
 } from "../src/client/index.js"
-import { tempDir } from "./helpers.js"
+import { makeZip, tempDir } from "./helpers.js"
+
+// Never close the real BEE2 while testing
+process.env.BEEPM_NO_CLOSE_BEE2 = "1"
 
 let tmp
 before(async () => {
@@ -237,4 +241,86 @@ test("update moves packages to the newest version their ranges allow", async () 
         plan.steps.map((s) => `${s.from}->${s.to}`),
         ["1.0.0->1.5.0"],
     )
+})
+
+test("hook and unhook close BEE2 only when they change something", async () => {
+    const env = {
+        BEEPM_HOME: path.join(tmp.dir, "home4"),
+        BEE2_CONFIG_DIR: path.join(tmp.dir, "bee2-4"),
+    }
+    const paths = beepmPaths(env)
+    const bee2 = bee2Paths(env)
+    await mkdir(bee2.configDir, { recursive: true })
+    await writeFile(bee2.configFile, "[Directories]\npackage = ../packages/\n")
+    let closes = 0
+    const close = async () => {
+        closes++
+        return true
+    }
+    const config = {}
+    assert.deepEqual(await hookBee2(paths, bee2, config, { close }), {
+        changed: true,
+        previous: "../packages/",
+        closedBee2: true,
+    })
+    assert.equal((await hookBee2(paths, bee2, config, { close })).closedBee2, false) // already hooked
+    assert.equal(closes, 1)
+    assert.equal((await unhookBee2(paths, bee2, config, { close })).closedBee2, true)
+    assert.equal((await unhookBee2(paths, bee2, config, { close })).changed, false)
+    assert.equal(closes, 2)
+})
+
+test("setup downloads the packages before the music and announces every download first", async () => {
+    const env = { BEEPM_HOME: path.join(tmp.dir, "home5") }
+    const paths = beepmPaths(env)
+    // A BEE2-items release whose zips each hold one .bee_pack
+    const inner = path.join(tmp.dir, "inner.bee_pack")
+    await makeZip(inner, { "info.txt": '"ID" "BEE2_CLEAN_STYLE"' })
+    const packagesZip = await makeZip(path.join(tmp.dir, "packages.zip"), {
+        "clean_style.bee_pack": await readFile(inner),
+    })
+    const musicZip = await makeZip(path.join(tmp.dir, "music.zip"), {
+        "music.bee_pack": await readFile(inner),
+    })
+    const files = { "https://dl/music.zip": musicZip, "https://dl/packages.zip": packagesZip }
+    const sizes = {}
+    for (const [url, file] of Object.entries(files)) sizes[url] = (await readFile(file)).length
+    const fakeFetch = async (url) => {
+        if (String(url).includes("BEE2-items/releases")) {
+            return Response.json([
+                {
+                    tag_name: "v4.46.0",
+                    assets: [
+                        {
+                            name: "BEE2_v4.46.0_music.zip",
+                            size: sizes["https://dl/music.zip"],
+                            browser_download_url: "https://dl/music.zip",
+                        },
+                        {
+                            name: "BEE2_v4.46.1_packages.zip",
+                            size: sizes["https://dl/packages.zip"],
+                            browser_download_url: "https://dl/packages.zip",
+                        },
+                    ],
+                },
+            ])
+        }
+        return new Response(await readFile(files[url]))
+    }
+    const events = []
+    const config = {}
+    await installBasePackages(paths, config, {
+        version: "2.4.46.1",
+        fetch: fakeFetch,
+        close: async () => true,
+        onProgress: (p) => events.push(p),
+    })
+    assert.deepEqual(
+        events[0].assets.map((a) => a.name),
+        ["BEE2_v4.46.1_packages.zip", "BEE2_v4.46.0_music.zip"],
+    )
+    assert.equal(events[1].step, "closed-bee2")
+    const downloads = [...new Set(events.filter((e) => e.step === "download").map((e) => e.asset))]
+    assert.deepEqual(downloads, ["BEE2_v4.46.1_packages.zip", "BEE2_v4.46.0_music.zip"])
+    assert.deepEqual(config.bee2.basePackages, ["BEE2_CLEAN_STYLE"])
 })

@@ -44,12 +44,13 @@ export async function findUserByIdentity(db, provider, providerId) {
 export async function createUser(db, { handle, profile, role = "user", claimed = true }) {
     return db.tx(async (tx) => {
         const { rows } = await tx.query(
-            `INSERT INTO users (handle, display_name, avatar_url, role, claimed_at)
-             VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+            `INSERT INTO users (handle, display_name, avatar_url, avatar_source, role, claimed_at)
+             VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
             [
                 handle,
                 profile?.displayName || null,
                 profile?.avatarUrl || null,
+                profile?.avatarUrl ? profile.provider : null,
                 role,
                 claimed ? new Date() : null,
             ],
@@ -62,8 +63,8 @@ export async function createUser(db, { handle, profile, role = "user", claimed =
 
 export async function addIdentity(db, userId, profile, { login = false } = {}) {
     await db.query(
-        `INSERT INTO identities (provider, provider_id, user_id, username, account_created_at, last_login_at)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
+        `INSERT INTO identities (provider, provider_id, user_id, username, account_created_at, last_login_at, avatar_url)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
         [
             profile.provider,
             profile.providerId,
@@ -71,19 +72,21 @@ export async function addIdentity(db, userId, profile, { login = false } = {}) {
             profile.username,
             profile.accountCreatedAt,
             login ? new Date() : null,
+            profile.avatarUrl ?? null,
         ],
     )
 }
 
 export async function listIdentities(db, userId) {
     const { rows } = await db.query(
-        `SELECT provider, username, linked_at, last_login_at FROM identities
+        `SELECT provider, username, avatar_url, linked_at, last_login_at FROM identities
           WHERE user_id = $1 ORDER BY linked_at`,
         [userId],
     )
     return rows.map((r) => ({
         provider: r.provider,
         username: r.username,
+        avatarUrl: r.avatar_url,
         linkedAt: r.linked_at,
         lastLoginAt: r.last_login_at,
     }))

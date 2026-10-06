@@ -5,6 +5,7 @@ import { api, login, makePack, setup } from "./helpers.js"
 
 const LEGACY = "https://legacy.example/registry.json"
 let t
+let adminToken
 before(async () => {
     t = await setup({ LEGACY_REGISTRY_URL: LEGACY })
 })
@@ -157,6 +158,7 @@ test("importing the old registry creates unclaimed accounts their owners can log
     )
 
     const { token: admin } = await login(t, t.profile({ username: "boss" }), { handle: "boss" })
+    adminToken = admin
     const res = await api(t, admin, "POST", "/v1/admin/import-legacy")
     assert.equal(res.status, 200, JSON.stringify(res.body))
     assert.equal(res.body.versions, 2)
@@ -186,4 +188,45 @@ test("importing the old registry creates unclaimed accounts their owners can log
         user.body.packages.map((p) => p.name),
         ["@piecreeper12/piecreepersitems"],
     )
+})
+
+test("the old-registry import uses the owner's BeePM handle, not the old author name", async () => {
+    // SomeGuy already has a BeePM account called @guy, with their GitHub account linked
+    await login(t, t.profile({ provider: "github", username: "SomeGuy", id: "9090" }), {
+        handle: "guy",
+    })
+    const pack = await readFile(
+        await makePack(t.dir, {
+            id: "GUY_ITEMS",
+            manifest: { name: "guy-items", author: "SomeGuy", version: "1.0.0" },
+        }),
+    )
+    const base = "https://legacy.example"
+    t.routes.set(
+        LEGACY,
+        json({
+            packages: {
+                by_id: {
+                    GUY_ITEMS: {
+                        author: "SomeGuy",
+                        name: "guy-items",
+                        versions: { "1.0.0": { path: "/packages/SomeGuy/GUY_ITEMS/1.0.0/" } },
+                    },
+                },
+            },
+        }),
+    )
+    t.routes.set(`${base}/github_packages.json`, json({ packages: {} }))
+    t.routes.set(`${base}/packages/SomeGuy/GUY_ITEMS/1.0.0/package.bee_pack`, file(pack))
+    t.routes.set(
+        "https://api.github.com/users/SomeGuy",
+        json({ id: 9090, login: "SomeGuy", created_at: "2020-01-01T00:00:00Z" }),
+    )
+
+    const res = await api(t, adminToken, "POST", "/v1/admin/import-legacy")
+    assert.equal(res.status, 200, JSON.stringify(res.body))
+    assert.deepEqual(res.body.imported, ["@guy/guy-items@1.0.0"])
+    const doc = await api(t, null, "GET", "/v1/packages/@guy/guy-items")
+    assert.deepEqual(doc.body.owners, ["guy"])
+    assert.equal((await api(t, null, "GET", "/v1/packages/@someguy/guy-items")).status, 404)
 })

@@ -208,3 +208,52 @@ test("tokens: list, publish tokens, revoke and logout", async () => {
     assert.equal(after.status, 401)
     assert.equal(after.body.error.code, "invalid_token")
 })
+
+test("account settings: nickname and which linked account's picture to show", async () => {
+    const github = t.profile({ username: "Painter", avatarUrl: "https://gh.example/painter.png" })
+    const { token } = await login(t, github, { handle: "painter" })
+    let me = (await api(t, token, "GET", "/v1/me")).body
+    assert.equal(me.user.displayName, "Painter")
+    assert.equal(me.user.avatarUrl, "https://gh.example/painter.png")
+    assert.equal(me.avatarSource, "github")
+
+    const renamed = await api(t, token, "PATCH", "/v1/me", { displayName: "  Paint Master  " })
+    assert.equal(renamed.status, 200, JSON.stringify(renamed.body))
+    assert.equal(renamed.body.user.displayName, "Paint Master")
+    assert.equal(renamed.body.user.handle, "painter") // the handle never changes
+    for (const bad of ["", "   ", "x".repeat(51)]) {
+        assert.equal((await api(t, token, "PATCH", "/v1/me", { displayName: bad })).status, 400)
+    }
+
+    // Link Discord, switch the picture to it, then to none
+    const start = await api(t, token, "POST", "/v1/me/links", { clientName: "x" })
+    const discord = t.profile({
+        provider: "discord",
+        username: "painter_dc",
+        avatarUrl: "https://dc.example/painter.png",
+    })
+    const { callback, browser: b } = await browserToCallback(t, start.body.url, discord, "discord")
+    await postForm(t, b, `/link/${start.body.id}/approve`, { csrf: csrfOf(callback.body) })
+    me = (await api(t, token, "PATCH", "/v1/me", { avatar: "discord" })).body
+    assert.equal(me.user.avatarUrl, "https://dc.example/painter.png")
+    assert.deepEqual(
+        me.identities.map((i) => [i.provider, i.avatarUrl]),
+        [
+            ["github", "https://gh.example/painter.png"],
+            ["discord", "https://dc.example/painter.png"],
+        ],
+    )
+    assert.equal((await api(t, token, "PATCH", "/v1/me", { avatar: "steam" })).status, 400)
+
+    // Unlinking the account the picture came from falls back to the other one
+    await api(t, token, "DELETE", "/v1/me/identities/discord")
+    me = (await api(t, token, "GET", "/v1/me")).body
+    assert.equal(me.user.avatarUrl, "https://gh.example/painter.png")
+    assert.equal(me.avatarSource, "github")
+
+    me = (await api(t, token, "PATCH", "/v1/me", { avatar: "none" })).body
+    assert.equal(me.user.avatarUrl, null)
+    // Logging in again doesn't bring the picture back
+    await login(t, github)
+    assert.equal((await api(t, token, "GET", "/v1/me")).body.user.avatarUrl, null)
+})

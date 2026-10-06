@@ -109,6 +109,7 @@ export function createApi({
             request("POST", `/v1/auth/sessions/${encodeURIComponent(id)}/poll`, { secret }),
         logout: () => request("DELETE", "/v1/auth/token"),
         me: () => request("GET", "/v1/me"),
+        updateMe: (changes) => request("PATCH", "/v1/me", changes),
         tokens: () => request("GET", "/v1/me/tokens"),
         createToken: ({ name, days }) => request("POST", "/v1/me/tokens", { name, days }),
         revokeToken: (id) => request("DELETE", `/v1/me/tokens/${encodeURIComponent(id)}`),

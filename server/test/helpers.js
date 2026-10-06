@@ -67,14 +67,20 @@ export async function setup(env = {}) {
         dir,
         routes,
         /** Registers a provider account and returns its fake OAuth code. */
-        profile({ provider = "github", username, ageDays = 365, id = String(nextId++) }) {
+        profile({
+            provider = "github",
+            username,
+            ageDays = 365,
+            id = String(nextId++),
+            avatarUrl = null,
+        }) {
             const code = `${provider}-${username}-${id}`
             profiles.set(code, {
                 provider,
                 providerId: id,
                 username,
                 displayName: username,
-                avatarUrl: null,
+                avatarUrl,
                 accountCreatedAt: new Date(Date.now() - ageDays * DAY).toISOString(),
             })
             return code

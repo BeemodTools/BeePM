@@ -142,6 +142,7 @@ export async function importLegacy(deps, { registryUrl }) {
                         publishedAt: entry.publishedAt,
                         skipDependencyCheck: true,
                         allowLegacy: true,
+                        forceScope: user.handle,
                     },
                 )
             })

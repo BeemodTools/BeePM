@@ -69,14 +69,12 @@ export async function buildApp(deps) {
     })
 
     app.setNotFoundHandler((request, reply) =>
-        reply
-            .code(404)
-            .send({
-                error: {
-                    code: "not_found",
-                    message: `No route for ${request.method} ${request.url.split("?")[0]}`,
-                },
-            }),
+        reply.code(404).send({
+            error: {
+                code: "not_found",
+                message: `No route for ${request.method} ${request.url.split("?")[0]}`,
+            },
+        }),
     )
 
     app.get("/health", async () => ({ ok: true }))

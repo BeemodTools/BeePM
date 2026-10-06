@@ -1,8 +1,16 @@
 import assert from "node:assert/strict"
-import { mkdir, writeFile } from "node:fs/promises"
+import { copyFile, mkdir, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { after, before, test } from "node:test"
-import { checkPack, hashFile, PackError, packFolder, readPack, stripPack } from "../src/pack.js"
+import {
+    checkPack,
+    hashFile,
+    PackError,
+    packFolder,
+    putFileInZip,
+    readPack,
+    stripPack,
+} from "../src/pack.js"
 import { makeZip, packFiles, tempDir } from "./helpers.js"
 
 let tmp
@@ -94,4 +102,49 @@ test("packFolder zips allowed files and skips the rest", async () => {
     assert.equal(added.length, 4)
     assert.deepEqual(skipped.sort(), [".git/", "build.ps1"])
     assert.equal((await checkPack(out, { defaultScope: "me" })).beeId, "TEST_PACK")
+})
+
+const LZMA_FIXTURE = new URL("./fixtures/lzma.bee_pack", import.meta.url)
+
+test("LZMA-compressed packages (like BEE2's own) can be read and stripped", async () => {
+    const pack = await readPack(LZMA_FIXTURE)
+    assert.match(pack.infoText, /"ID" "LZMA_TEST"/)
+    assert.equal(pack.manifestText, null)
+
+    const copy = path.join(tmp.dir, "lzma-strip.bee_pack")
+    await stripPack(LZMA_FIXTURE, copy, ["resources/materials/lzma.vmt"])
+    const stripped = await readPack(copy)
+    assert.deepEqual(stripped.files.sort(), ["info.txt", "items/lzma_test/editoritems.txt"])
+    assert.match(stripped.infoText, /LZMA_TEST/)
+})
+
+test("putFileInZip adds bee-package.json without touching the other files", async () => {
+    const copy = path.join(tmp.dir, "lzma-add.bee_pack")
+    await copyFile(LZMA_FIXTURE, copy)
+    const before = await hashFile(LZMA_FIXTURE)
+
+    await putFileInZip(
+        copy,
+        "bee-package.json",
+        JSON.stringify({ name: "lzma-test", version: "1.0.0" }),
+    )
+    const checked = await checkPack(copy, { defaultScope: "me" })
+    assert.equal(checked.manifest.fullName, "@me/lzma-test")
+    assert.equal(checked.beeId, "LZMA_TEST")
+
+    // Replacing it keeps one copy, and the original entries are still readable
+    await putFileInZip(
+        copy,
+        "Bee-Package.json",
+        JSON.stringify({ name: "lzma-test", version: "1.0.1" }),
+    )
+    const again = await readPack(copy)
+    assert.equal(again.files.filter((f) => f.toLowerCase() === "bee-package.json").length, 1)
+    assert.equal(JSON.parse(again.manifestText).version, "1.0.1")
+    assert.match(again.infoText, /LZMA_TEST/)
+    assert.equal(await hashFile(LZMA_FIXTURE), before) // the fixture itself wasn't touched
+
+    const notZip = path.join(tmp.dir, "not-a-zip.bee_pack")
+    await writeFile(notZip, "nope")
+    await assert.rejects(putFileInZip(notZip, "bee-package.json", "{}"), PackError)
 })

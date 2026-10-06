@@ -1,6 +1,6 @@
-import { access, writeFile } from "node:fs/promises"
+import { stat, writeFile } from "node:fs/promises"
 import path from "node:path"
-import { formatName, MANIFEST_FILE, PackError, parseSpec } from "@beepm/core"
+import { formatName, MANIFEST_FILE, PackError, parseSpec, putFileInZip } from "@beepm/core"
 import { loadConfig, preparePublish, publishPrepared, suggestManifest } from "@beepm/core/client"
 import { CliError, getContext, requireLogin } from "../context.js"
 import { color, confirm, formatBytes, info, ok, progress, warn } from "../output.js"
@@ -101,33 +101,39 @@ export function register(program) {
         })
 
     program
-        .command("new [folder]")
+        .command("new [path]")
         .alias("generate")
-        .description("Create bee-package.json for a package folder, from its info.txt")
-        .option("-f, --force", "overwrite an existing bee-package.json")
+        .description("Create bee-package.json for a package folder or .bee_pack, from its info.txt")
+        .option("-f, --force", "replace an existing bee-package.json")
         .option("-y, --yes", "accept the suggestions without asking")
-        .action(async (folder = ".", options) => {
+        .action(async (input = ".", options) => {
             const ctx = await getContext()
-            const dir = path.resolve(folder)
-            const target = path.join(dir, MANIFEST_FILE)
-            const exists = await access(target).then(
-                () => true,
-                () => false,
-            )
-            if (exists && !options.force)
-                throw new CliError(`${target} already exists (use --force to replace it).`)
+            const target = path.resolve(input)
+            const stats = await stat(target).catch(() => null)
+            if (!stats) throw new CliError(`${target} doesn't exist.`)
+            const isPack = stats.isFile()
+            const where = isPack ? path.basename(target) : path.join(target, MANIFEST_FILE)
 
             const config = await loadConfig(ctx.paths)
-            const { manifest } = await suggestManifest(
+            const { manifest, existing } = await suggestManifest(
                 { api: ctx.api, basePackages: config.bee2?.basePackages },
-                dir,
+                target,
                 { handle: ctx.login?.user?.handle ?? null, bee2Version: config.bee2?.version },
             )
-            info(JSON.stringify(manifest, null, 4))
-            if (!options.yes && !(await confirm(`Write this to ${target}?`, true)))
-                throw new CliError("Cancelled.")
-            await writeFile(target, JSON.stringify(manifest, null, 4) + "\n")
-            ok(`Wrote ${target}. Edit it if needed, then run beepm publish`)
+            if (existing && !options.force) {
+                throw new CliError(
+                    `${where} already has a bee-package.json (use --force to replace it).`,
+                )
+            }
+            const text = JSON.stringify(manifest, null, 4) + "\n"
+            info(text)
+            const question = isPack ? `Add this to ${where}?` : `Write this to ${where}?`
+            if (!options.yes && !(await confirm(question, true))) throw new CliError("Cancelled.")
+            if (isPack) await putFileInZip(target, MANIFEST_FILE, text)
+            else await writeFile(path.join(target, MANIFEST_FILE), text)
+            ok(
+                `${isPack ? "Added bee-package.json to" : "Wrote"} ${where}. Edit it if needed, then run beepm publish`,
+            )
         })
 
     program

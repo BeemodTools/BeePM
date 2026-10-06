@@ -7,7 +7,8 @@ import { hashFile } from "../pack.js"
 import { downloadFile } from "./download.js"
 import { readJson, replaceFile } from "./files.js"
 import { packageFileName } from "./paths.js"
-import { loadConfig, loadInstalled, saveInstalled } from "./state.js"
+import { refreshBaseIds } from "./bee2.js"
+import { loadConfig, loadInstalled, saveConfig, saveInstalled } from "./state.js"
 
 /** An install/uninstall problem with a message meant for the user. */
 export class InstallError extends Error {}
@@ -81,6 +82,7 @@ function describeWants(wants) {
 export async function planInstall(ctx, specs, { update = false, force = false } = {}) {
     const { api, paths } = ctx
     const config = await loadConfig(paths)
+    if (await refreshBaseIds(paths, config)) await saveConfig(paths, config)
     const installed = await loadInstalled(paths)
     const bee2Version = config.bee2?.version ?? null
     const basePackages = new Set(config.bee2?.basePackages ?? [])

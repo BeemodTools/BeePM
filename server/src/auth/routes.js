@@ -415,6 +415,13 @@ export default async function authRoutes(app) {
             try {
                 await db.tx(async (tx) => {
                     await addIdentity(tx, user.id, profile)
+                    // No profile picture yet: use the one from the newly linked account
+                    await tx.query(
+                        `UPDATE users SET avatar_url = $2::text, avatar_source = $3
+                          WHERE id = $1 AND avatar_url IS NULL AND avatar_source IS DISTINCT FROM 'none'
+                            AND $2::text IS NOT NULL`,
+                        [user.id, profile.avatarUrl ?? null, profile.provider],
+                    )
                     await tx.query(
                         "UPDATE auth_sessions SET status = 'approved', profile = NULL, result = $2 WHERE id = $1",
                         [
@@ -450,14 +457,27 @@ export default async function authRoutes(app) {
         if (user.banned_at) throw new PageError(403, "Account banned", `@${user.handle} is banned.`)
         const linked = await db.tx(async (tx) => {
             const { rowCount } = await tx.query(
-                `UPDATE identities SET username = $3, last_login_at = now()
+                `UPDATE identities SET username = $3, last_login_at = now(), avatar_url = $5
                       WHERE provider = $1 AND provider_id = $2 AND user_id = $4`,
-                [profile.provider, profile.providerId, profile.username, user.id],
+                [
+                    profile.provider,
+                    profile.providerId,
+                    profile.username,
+                    user.id,
+                    profile.avatarUrl,
+                ],
             )
             if (rowCount !== 1) return false
             await tx.query(
+                // The profile picture follows the provider it was chosen from (or the first one)
                 `UPDATE users SET claimed_at = coalesce(claimed_at, now()),
-                            avatar_url = coalesce(avatar_url, $2), display_name = coalesce(display_name, $3),
+                            avatar_url = CASE WHEN avatar_source = $5
+                                                OR (avatar_source IS NULL AND avatar_url IS NULL)
+                                              THEN $2::text ELSE avatar_url END,
+                            avatar_source = CASE WHEN avatar_source IS NULL AND avatar_url IS NULL
+                                                  AND $2::text IS NOT NULL
+                                                 THEN $5 ELSE avatar_source END,
+                            display_name = coalesce(display_name, $3),
                             role = CASE WHEN $4 THEN 'admin' ELSE role END
                       WHERE id = $1`,
                 [
@@ -465,6 +485,7 @@ export default async function authRoutes(app) {
                     profile.avatarUrl,
                     profile.displayName,
                     config.bootstrapAdmins.includes(user.handle),
+                    profile.provider,
                 ],
             )
             await tx.query(

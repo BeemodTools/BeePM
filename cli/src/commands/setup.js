@@ -4,6 +4,7 @@ import {
     installBasePackages,
     listBee2Releases,
     loadConfig,
+    refreshBaseIds,
     saveConfig,
     unhookBee2,
 } from "@beepm/core/client"
@@ -56,12 +57,20 @@ export function register(program) {
                 includeMusic: options.music,
                 fetch: ctx.fetch,
                 onProgress: (p) => {
-                    if (p.asset !== asset || p.step === "extract") {
-                        if (p.asset !== asset) {
-                            bar?.done()
-                            asset = p.asset
-                            bar = progress(`Downloading ${p.asset}`)
-                        }
+                    if (p.step === "plan") {
+                        info(
+                            color.dim(`Downloading ${p.assets.map((a) => a.name).join(", then ")}`),
+                        )
+                        return
+                    }
+                    if (p.step === "closed-bee2") {
+                        info("Closed BEE2 so its packages can be replaced.")
+                        return
+                    }
+                    if (p.asset !== asset) {
+                        bar?.done()
+                        asset = p.asset
+                        bar = progress(`Downloading ${p.asset}`)
                     }
                     if (p.step === "download") bar.update(p.received, p.total)
                 },
@@ -75,7 +84,7 @@ export function register(program) {
             await saveConfig(ctx.paths, config)
             ok(
                 hook.changed
-                    ? "BEE2 now loads packages from BeePM. Close BEE2 before running this, or it may undo the change."
+                    ? "BEE2 now loads packages from BeePM. Start BEE2 to use them."
                     : "BEE2 was already hooked to BeePM.",
             )
             info(color.dim(`Packages folder: ${ctx.paths.packages}`))
@@ -94,11 +103,9 @@ export function register(program) {
                     `BEE2's own packages aren't in BeePM's folder yet. Run ${color.cyan("beepm setup")}.`,
                 )
             }
-            ok(
-                result.changed
-                    ? "Hooked BEE2 to BeePM. (Close BEE2 first, or it may undo this when it exits.)"
-                    : "BEE2 is already hooked to BeePM.",
-            )
+            ok(result.changed ? "Hooked BEE2 to BeePM." : "BEE2 is already hooked to BeePM.")
+            if (result.closedBee2)
+                info("Closed BEE2 so it can't undo this. Start it again to use BeePM's packages.")
         })
 
     program
@@ -115,6 +122,8 @@ export function register(program) {
                     ? `BEE2 uses ${result.restored} again.`
                     : "BEE2 uses its default packages folder again.",
             )
+            if (result.closedBee2)
+                info("Closed BEE2 so it can't undo this. Start it again whenever you like.")
         })
 
     program
@@ -123,6 +132,7 @@ export function register(program) {
         .action(async () => {
             const ctx = await getContext()
             const config = await loadConfig(ctx.paths)
+            if (await refreshBaseIds(ctx.paths, config)) await saveConfig(ctx.paths, config)
             const status = await bee2Status(ctx.paths, ctx.bee2)
             info(`Registry:  ${ctx.registry}`)
             info(

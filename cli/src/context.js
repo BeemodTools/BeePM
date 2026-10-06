@@ -49,7 +49,9 @@ export async function adoptOldInstalls(ctx) {
                 `These packages from an earlier BeePM version aren't in the registry and were left alone: ${unknown.join(", ")}`,
             )
     } catch (err) {
-        warn(`Couldn't take over packages installed by an earlier BeePM version yet: ${err.message}`)
+        warn(
+            `Couldn't take over packages installed by an earlier BeePM version yet: ${err.message}`,
+        )
     }
 }
 

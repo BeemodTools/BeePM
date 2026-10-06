@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto"
 import { createReadStream, createWriteStream } from "node:fs"
-import { readdir, stat } from "node:fs/promises"
+import { open, readdir, rename, rm, stat } from "node:fs/promises"
 import path from "node:path"
 import { pipeline } from "node:stream/promises"
+import zlib from "node:zlib"
+import { decompress as lzmaDecompress } from "lzma1"
 import yauzl from "yauzl"
 import yazl from "yazl"
 import { readInfoTxt } from "./infotxt.js"
@@ -59,14 +61,43 @@ export async function hashFile(filePath) {
     return hash.digest("hex")
 }
 
+const LZMA = 14
+
+/**
+ * Zip's LZMA entries: 2 bytes of version, 2 bytes of properties length, the properties, then
+ * the LZMA stream. The decoder wants the classic .lzma header: properties + 8-byte size.
+ */
+function decodeZipLzma(raw, uncompressedSize) {
+    const propsLength = raw.readUInt16LE(2)
+    const size = Buffer.alloc(8)
+    size.writeBigUInt64LE(BigInt(uncompressedSize))
+    const out = lzmaDecompress(
+        Buffer.concat([raw.subarray(4, 4 + propsLength), size, raw.subarray(4 + propsLength)]),
+    )
+    return typeof out === "string" ? Buffer.from(out, "utf8") : Buffer.from(out)
+}
+
+/**
+ * The contents of a zip entry, in memory. Handles stored and deflated entries, and LZMA ones
+ * (BEE2's own packages are LZMA-compressed, which yauzl can't decode by itself).
+ */
+async function readEntryBytes(zipfile, entry) {
+    const lzma = entry.compressionMethod === LZMA
+    const stream = await zipfile.openReadStreamPromise(
+        entry,
+        lzma ? { decodeFileData: false } : undefined,
+    )
+    const chunks = []
+    for await (const chunk of stream) chunks.push(chunk)
+    const data = Buffer.concat(chunks)
+    return lzma ? decodeZipLzma(data, entry.uncompressedSize) : data
+}
+
 async function readEntryText(zipfile, entry, maxBytes, label) {
     if (entry.uncompressedSize > maxBytes) {
         throw new PackError([`${label} is larger than ${Math.round(maxBytes / 1024)} KB`])
     }
-    const stream = await zipfile.openReadStreamPromise(entry)
-    const chunks = []
-    for await (const chunk of stream) chunks.push(chunk)
-    return Buffer.concat(chunks).toString("utf8")
+    return (await readEntryBytes(zipfile, entry)).toString("utf8")
 }
 
 /**
@@ -180,6 +211,8 @@ export async function stripPack(sourcePath, destinationPath, removeNames) {
             const options = { mtime: entry.getLastModDate() }
             if (entry.fileName.endsWith("/")) {
                 out.addEmptyDirectory(entry.fileName, options)
+            } else if (entry.compressionMethod === LZMA) {
+                out.addBuffer(await readEntryBytes(zipfile, entry), entry.fileName, options)
             } else {
                 out.addReadStreamLazy(entry.fileName, options, (callback) =>
                     zipfile.openReadStream(entry, callback),
@@ -230,4 +263,155 @@ export async function packFolder(folder, destinationPath) {
     }
     await written
     return { added, skipped }
+}
+
+// ---------- adding a file to an existing zip ----------
+
+const EOCD_SIGNATURE = 0x06054b50
+const CENTRAL_SIGNATURE = 0x02014b50
+
+async function readAt(handle, position, length) {
+    const buffer = Buffer.alloc(length)
+    const { bytesRead } = await handle.read(buffer, 0, length, position)
+    return buffer.subarray(0, bytesRead)
+}
+
+function dosDateTime(date) {
+    return {
+        time:
+            (date.getHours() << 11) | (date.getMinutes() << 5) | Math.floor(date.getSeconds() / 2),
+        day: ((date.getFullYear() - 1980) << 9) | ((date.getMonth() + 1) << 5) | date.getDate(),
+    }
+}
+
+/** The zip's end record and its list of entries (the central directory). */
+async function readCentralDirectory(zipPath) {
+    const handle = await open(zipPath, "r")
+    try {
+        const { size } = await handle.stat()
+        // The end record is in the last 22 bytes plus up to 64 KB of comment
+        const tailLength = Math.min(size, 22 + 0xffff)
+        const tail = await readAt(handle, size - tailLength, tailLength)
+        let at = -1
+        for (let i = tail.length - 22; i >= 0; i--) {
+            if (tail.readUInt32LE(i) === EOCD_SIGNATURE) {
+                at = i
+                break
+            }
+        }
+        if (at < 0) throw new PackError(["it isn't a valid zip file"])
+        const end = {
+            entries: tail.readUInt16LE(at + 10),
+            centralSize: tail.readUInt32LE(at + 12),
+            centralOffset: tail.readUInt32LE(at + 16),
+            comment: tail.subarray(at + 22, at + 22 + tail.readUInt16LE(at + 20)),
+        }
+        if (end.entries === 0xffff || end.centralOffset === 0xffffffff) {
+            throw new PackError([
+                "it's a ZIP64 archive, which BeePM can't edit; re-zip it normally",
+            ])
+        }
+        return { end, central: await readAt(handle, end.centralOffset, end.centralSize) }
+    } finally {
+        await handle.close()
+    }
+}
+
+/**
+ * Puts a file at the root of a zip, replacing any entry with the same name (matched
+ * case-insensitively), without touching anything else: every other entry is copied byte for
+ * byte, whatever its compression. The new zip is read back before it replaces the original.
+ * Used to add bee-package.json to a .bee_pack.
+ */
+export async function putFileInZip(zipPath, fileName, content) {
+    const { end, central } = await readCentralDirectory(zipPath)
+
+    const kept = []
+    for (let offset = 0; offset < central.length;) {
+        if (central.readUInt32LE(offset) !== CENTRAL_SIGNATURE) {
+            throw new PackError(["its list of files is damaged"])
+        }
+        const nameLength = central.readUInt16LE(offset + 28)
+        const recordLength =
+            46 + nameLength + central.readUInt16LE(offset + 30) + central.readUInt16LE(offset + 32)
+        const name = central.toString("utf8", offset + 46, offset + 46 + nameLength)
+        if (name.toLowerCase() !== fileName.toLowerCase()) {
+            kept.push(central.subarray(offset, offset + recordLength))
+        }
+        offset += recordLength
+    }
+
+    const data = Buffer.from(content)
+    const compressed = zlib.deflateRawSync(data)
+    const crc = zlib.crc32(data)
+    const name = Buffer.from(fileName, "utf8")
+    const { time, day } = dosDateTime(new Date())
+
+    const local = Buffer.alloc(30)
+    local.writeUInt32LE(0x04034b50, 0)
+    local.writeUInt16LE(20, 4) // version needed
+    local.writeUInt16LE(0x0800, 6) // UTF-8 name
+    local.writeUInt16LE(8, 8) // deflate
+    local.writeUInt16LE(time, 10)
+    local.writeUInt16LE(day, 12)
+    local.writeUInt32LE(crc, 14)
+    local.writeUInt32LE(compressed.length, 18)
+    local.writeUInt32LE(data.length, 22)
+    local.writeUInt16LE(name.length, 26)
+
+    const record = Buffer.alloc(46)
+    record.writeUInt32LE(CENTRAL_SIGNATURE, 0)
+    record.writeUInt16LE(20, 4) // version made by
+    record.writeUInt16LE(20, 6) // version needed
+    record.writeUInt16LE(0x0800, 8)
+    record.writeUInt16LE(8, 10)
+    record.writeUInt16LE(time, 12)
+    record.writeUInt16LE(day, 14)
+    record.writeUInt32LE(crc, 16)
+    record.writeUInt32LE(compressed.length, 20)
+    record.writeUInt32LE(data.length, 24)
+    record.writeUInt16LE(name.length, 28)
+    record.writeUInt32LE(end.centralOffset, 42) // the new entry goes where the old list began
+
+    const newCentral = Buffer.concat([...kept, record, name])
+    const newCentralOffset = end.centralOffset + local.length + name.length + compressed.length
+    if (kept.length + 1 >= 0xffff || newCentralOffset + newCentral.length >= 0xffffffff) {
+        throw new PackError(["it's too big for BeePM to edit; add the file and re-zip it yourself"])
+    }
+    const endRecord = Buffer.alloc(22)
+    endRecord.writeUInt32LE(EOCD_SIGNATURE, 0)
+    endRecord.writeUInt16LE(kept.length + 1, 8)
+    endRecord.writeUInt16LE(kept.length + 1, 10)
+    endRecord.writeUInt32LE(newCentral.length, 12)
+    endRecord.writeUInt32LE(newCentralOffset, 16)
+    endRecord.writeUInt16LE(end.comment.length, 20)
+
+    const temp = `${zipPath}.${process.pid}.tmp`
+    try {
+        const out = createWriteStream(temp)
+        // Everything before the old list of files (all the existing entries), unchanged
+        if (end.centralOffset > 0) {
+            await pipeline(
+                createReadStream(zipPath, { start: 0, end: end.centralOffset - 1 }),
+                out,
+                { end: false },
+            )
+        }
+        for (const part of [local, name, compressed, newCentral, endRecord, end.comment]) {
+            if (!out.write(part)) await new Promise((resolve) => out.once("drain", resolve))
+        }
+        await new Promise((resolve, reject) => out.end((err) => (err ? reject(err) : resolve())))
+
+        const check = await readPack(temp)
+        const written = check.files.some((f) => f.toLowerCase() === fileName.toLowerCase())
+        const manifestOk =
+            fileName.toLowerCase() !== MANIFEST_FILE || check.manifestText === data.toString("utf8")
+        if (!written || !manifestOk) {
+            throw new PackError(["the edited package didn't read back correctly"])
+        }
+        await rename(temp, zipPath)
+    } catch (err) {
+        await rm(temp, { force: true })
+        throw err
+    }
 }

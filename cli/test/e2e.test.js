@@ -56,6 +56,7 @@ before(async () => {
         BEE2_CONFIG_DIR: path.join(dir, "bee2"),
         BEEPM_REGISTRY: registry,
         BEEPM_NO_BROWSER: "1",
+        BEEPM_NO_CLOSE_BEE2: "1",
         NO_COLOR: "1",
     })
 })
@@ -232,6 +233,27 @@ test("new writes bee-package.json from info.txt", async () => {
     assert.equal(manifest.name, "@maker/fresh-items")
     assert.deepEqual(manifest.dependencies, { "@beemod/BEE2_CLEAN_STYLE": "*" })
     assert.equal((await beepm("publish", folder, "--dry-run")).code, 0)
+})
+
+test("new adds bee-package.json inside a .bee_pack", async () => {
+    const { default: yazl } = await import("yazl")
+    const { createWriteStream } = await import("node:fs")
+    const { pipeline } = await import("node:stream/promises")
+    const file = path.join(dir, "zipped.bee_pack")
+    const zip = new yazl.ZipFile()
+    const written = pipeline(zip.outputStream, createWriteStream(file))
+    zip.addBuffer(Buffer.from('"ID" "ZIPPED_ITEMS"\n"Name" "Zipped Items"\n'), "info.txt")
+    zip.addBuffer(Buffer.from('"Item" {}'), "items/zipped/editoritems.txt")
+    zip.end()
+    await written
+
+    const res = await beepm("new", file, "--yes")
+    assert.equal(res.code, 0, res.out)
+    assert.match(res.out, /Added bee-package.json to zipped.bee_pack/)
+    const dry = await beepm("publish", file, "--dry-run")
+    assert.equal(dry.code, 0, dry.out)
+    assert.match(dry.out, /@maker\/zipped-items@1\.0\.0/)
+    assert.equal((await beepm("new", file, "--yes")).code, 1) // already there without --force
 })
 
 test("logout revokes the token", async () => {
