@@ -63,7 +63,8 @@ beepm new ./MyPackage             # writes bee-package.json from info.txt
 
 The Railway project **BeePM** has three parts: a **Postgres** database, a bucket called
 **Packages**, and the API service **beepm-registry** at
-https://beepm-registry-production.up.railway.app.
+https://beepm.beemodtools.org (a Cloudflare CNAME, DNS only, to the service's custom domain; Railway's own
+address https://beepm-registry-production.up.railway.app works too).
 
 The service builds with `server/Dockerfile` (set in its settings, along with the `/health`
 health check). Its variables are listed in [server/.env.example](server/.env.example). The
@@ -75,9 +76,9 @@ To finish the setup:
 1. Create the login apps and put their IDs and secrets in the service's variables
    (`DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`):
    - Discord: https://discord.com/developers/applications → New Application → OAuth2 → add the
-     redirect `https://beepm-registry-production.up.railway.app/oauth/discord/callback`
+     redirect `https://beepm.beemodtools.org/oauth/discord/callback`
    - GitHub: https://github.com/settings/developers → New OAuth App → callback URL
-     `https://beepm-registry-production.up.railway.app/oauth/github/callback`
+     `https://beepm.beemodtools.org/oauth/github/callback`
 2. Connect the service to this repository's branch. Migrations run at startup.
 3. Log in with an admin handle (`BOOTSTRAP_ADMINS`) and copy the old registry's packages over with
    `beepm admin import-legacy`. It's safe to run again.

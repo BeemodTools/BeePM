@@ -566,7 +566,7 @@ const bridge = {
         info: async () =>
             ok({
                 version: "1.0.0 (dev bridge)",
-                registry: "https://beepm-registry-production.up.railway.app",
+                registry: "https://beepm.beemodtools.org",
                 packagesDir: PACKAGES_DIR,
                 platform: "win32",
             }),

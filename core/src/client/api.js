@@ -4,7 +4,7 @@ import { parseName } from "../names.js"
  * The public BeePM registry: the Railway service's domain (set when the server is deployed).
  * BEEPM_REGISTRY or config.json's "registry" override it.
  */
-export const DEFAULT_REGISTRY = "https://beepm-registry-production.up.railway.app"
+export const DEFAULT_REGISTRY = "https://beepm.beemodtools.org"
 
 /** An error from the registry API: status 0 means the registry couldn't be reached. */
 export class RegistryError extends Error {
