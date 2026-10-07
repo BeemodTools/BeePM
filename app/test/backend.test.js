@@ -4,7 +4,7 @@
  * fetch, the way someone clicking through the pages would.
  */
 import assert from "node:assert/strict"
-import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import net from "node:net"
 import os from "node:os"
 import path from "node:path"
@@ -16,6 +16,7 @@ import { createPgliteDb } from "@beepm/server/src/db/index.js"
 import { migrate } from "@beepm/server/src/db/migrate.js"
 import { createLocalStorage } from "@beepm/server/src/storage/local.js"
 import { createBackend } from "../backend/backend.js"
+import { Logger } from "../backend/logger.js"
 
 // Hooking closes BEE2; a test must never close the real one
 process.env.BEEPM_NO_CLOSE_BEE2 = "1"
@@ -63,14 +64,15 @@ after(async () => {
 
 /**
  * A backend like the one main.js creates, with Electron's parts replaced by recorders.
- * fetch: a stand-in for the network (e.g. to play GitHub).
+ * fetch: a stand-in for the network (e.g. to play GitHub); log: a Logger.
  */
-async function startBackend({ fetch } = {}) {
+async function startBackend({ fetch, log } = {}) {
     const opened = []
     const events = []
     const backend = await createBackend({
         env,
         fetch,
+        log,
         appVersion: "1.0.0-test",
         openExternal: async (url) => opened.push(url),
         send: (channel, payload) => events.push({ channel, payload }),
@@ -160,7 +162,9 @@ test("cancelling a login in the browser reaches the app", async () => {
 })
 
 test("publish from a folder, find it, install it, uninstall it", async () => {
-    const { backend, nextEvent, events } = await startBackend()
+    const log = new Logger()
+    log.initialize({ dir: path.join(dir, "logs"), captureConsole: false, echo: false })
+    const { backend, nextEvent, events } = await startBackend({ log })
     const started = await backend.invoke("auth:login")
     await finishInBrowser(started.url, "Maker", "maker")
     assert.equal((await nextEvent("auth:login-result")).ok, true)
@@ -206,6 +210,26 @@ test("publish from a folder, find it, install it, uninstall it", async () => {
     await assert.rejects(
         access(path.join(env.BEEPM_HOME, "packages", "maker@maker-items.bee_pack")),
     )
+    const again = await backend.invoke("packages:uninstall", ["@maker/maker-items"])
+    assert.equal(again.ok, false)
+
+    // Each change is a step in the log, with how it ended
+    await log.close()
+    const text = await readFile(log.getLogFilePath(), "utf8")
+    for (const line of [
+        "Login started in the browser",
+        "Logged in as @maker",
+        "Checking my-items",
+        "├─ @maker/maker-items@1.0.0, 1 KB",
+        "[✓] Publishing @maker/maker-items@1.0.0 in ",
+        "Installing @maker/maker-items@1.0.0",
+        "├─ @maker/maker-items@1.0.0, 1 KB",
+        "Uninstalling @maker/maker-items",
+        "├─ Removed @maker/maker-items",
+        "[✗] Uninstalling @maker/maker-items failed after ",
+    ]) {
+        assert.ok(text.includes(line), `The log has no "${line}":\n${text}`)
+    }
 })
 
 test("account settings: nickname and profile picture", async () => {

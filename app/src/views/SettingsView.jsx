@@ -520,8 +520,33 @@ function Bee2Section() {
     )
 }
 
+function AboutSection() {
+    const { appInfo, notify } = useApp()
+
+    async function openLogs() {
+        const res = await api.app.openLogsFolder()
+        if (!res.ok) notify(res.error, "error")
+    }
+
+    return (
+        <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
+            <Box sx={{ flex: 1 }}>
+                <Typography sx={{ color: "#fff", fontWeight: 500 }}>
+                    <Brand /> {appInfo?.version ?? ""}
+                </Typography>
+                <Typography variant="body2" sx={{ color: "#888" }}>
+                    A package manager for BEEmod (BEE2) packages: browse, install and publish
+                    community packages for Portal 2's Puzzle Maker.
+                </Typography>
+            </Box>
+            <Button startIcon={<FolderOpenIcon />} onClick={openLogs} sx={{ flexShrink: 0 }}>
+                Open logs folder
+            </Button>
+        </Box>
+    )
+}
+
 export default function SettingsView() {
-    const { appInfo } = useApp()
     return (
         <Box>
             <Section title="ACCOUNT">
@@ -531,13 +556,7 @@ export default function SettingsView() {
                 <Bee2Section />
             </Section>
             <Section title="ABOUT">
-                <Typography sx={{ color: "#fff", fontWeight: 500 }}>
-                    <Brand /> {appInfo?.version ?? ""}
-                </Typography>
-                <Typography variant="body2" sx={{ color: "#888" }}>
-                    A package manager for BEEmod (BEE2) packages: browse, install and publish
-                    community packages for Portal 2's Puzzle Maker.
-                </Typography>
+                <AboutSection />
             </Section>
         </Box>
     )

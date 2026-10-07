@@ -22,7 +22,7 @@ import {
     RegistryError,
     suggestManifest,
 } from "@beepm/core/client"
-import { AppError, optionalText, throttle } from "../util.js"
+import { AppError, fileSize, listOf, optionalText, throttle } from "../util.js"
 
 function parseManifest(text) {
     if (!text) return null
@@ -80,8 +80,22 @@ function describePrepared(id, result) {
 }
 
 export function publishHandlers(shared) {
-    const { ctx, deps } = shared
+    const { ctx, deps, log, step } = shared
     const prepared = new Map() // id -> preparePublish() result, until it's published or discarded
+
+    /** A checked package in the log: what it is, and the files that had to be left out. */
+    function logPrepared(result) {
+        const m = result.manifest
+        log.info(`${m.fullName}@${m.version}, ${fileSize(result.size)}`)
+        if (result.stripped?.length) {
+            log.info(`Removed files that aren't allowed: ${listOf(result.stripped, "files")}`)
+        }
+    }
+
+    /** Why a package can't be published, one line each, before the step fails. */
+    const logProblems = (problems) => {
+        for (const problem of problems ?? []) log.warn(problem)
+    }
 
     async function resolveInput(input) {
         const text = optionalText(input)
@@ -148,33 +162,38 @@ export function publishHandlers(shared) {
 
         "publish:prepare": async (input) => {
             const { target, isFolder } = await resolveInput(input)
-            let result
-            try {
-                result = await preparePublish(target, { handle: shared.handle })
-            } catch (err) {
-                if (!(err instanceof PackError)) throw err
-                throw new AppError("This package can't be published yet.", {
-                    code: "invalid_package",
-                    problems: err.problems,
-                    path: target,
-                    isFolder,
-                    // bee-package.json is missing or invalid: offer to create one
-                    manifestProblem: err.problems.some((p) => p.startsWith(MANIFEST_FILE)),
-                })
-            }
-            const refusal = await registryRefusal(result)
-            if (refusal) {
-                await result.cleanup().catch(() => {})
-                throw new AppError("This package can't be published yet.", {
-                    code: "invalid_package",
-                    ...refusal,
-                    path: target,
-                    isFolder,
-                })
-            }
-            const id = randomUUID()
-            prepared.set(id, result)
-            return { ...describePrepared(id, result), path: target, isFolder }
+            return step(`Checking ${path.basename(target)}`, async () => {
+                let result
+                try {
+                    result = await preparePublish(target, { handle: shared.handle })
+                } catch (err) {
+                    if (!(err instanceof PackError)) throw err
+                    logProblems(err.problems)
+                    throw new AppError("This package can't be published yet.", {
+                        code: "invalid_package",
+                        problems: err.problems,
+                        path: target,
+                        isFolder,
+                        // bee-package.json is missing or invalid: offer to create one
+                        manifestProblem: err.problems.some((p) => p.startsWith(MANIFEST_FILE)),
+                    })
+                }
+                logPrepared(result)
+                const refusal = await registryRefusal(result)
+                if (refusal) {
+                    await result.cleanup().catch(() => {})
+                    logProblems(refusal.problems)
+                    throw new AppError("This package can't be published yet.", {
+                        code: "invalid_package",
+                        ...refusal,
+                        path: target,
+                        isFolder,
+                    })
+                }
+                const id = randomUUID()
+                prepared.set(id, result)
+                return { ...describePrepared(id, result), path: target, isFolder }
+            })
         },
 
         /**
@@ -190,49 +209,57 @@ export function publishHandlers(shared) {
             if (!owner || !repo || !tag || !name) {
                 throw new AppError("Pick a repository, a release and its .bee_pack.")
             }
-            let asset
-            try {
-                asset = await getGithubAsset({ fetch: ctx.fetch }, owner, repo, tag, name)
-            } catch (err) {
-                throw err instanceof GithubError ? new AppError(err.message) : err
-            }
-            if (asset.size > MAX_RELEASE_BYTES) {
-                throw new AppError(`${asset.name} is larger than 512 MB.`)
-            }
+            return step(`Checking ${name} from ${owner}/${repo} ${tag}`, async () => {
+                let asset
+                try {
+                    asset = await getGithubAsset({ fetch: ctx.fetch }, owner, repo, tag, name)
+                } catch (err) {
+                    throw err instanceof GithubError ? new AppError(err.message) : err
+                }
+                if (asset.size > MAX_RELEASE_BYTES) {
+                    throw new AppError(`${asset.name} is larger than 512 MB.`)
+                }
 
-            const work = await mkdtemp(path.join(os.tmpdir(), "beepm-github-"))
-            const removeWork = () => rm(work, { recursive: true, force: true })
-            let result
-            try {
-                const file = path.join(work, "release.bee_pack")
-                await downloadFile(asset.url, file, { fetch: ctx.fetch, expectedSize: asset.size })
-                result = await preparePublish(file, { handle: shared.handle })
-            } catch (err) {
-                await removeWork()
-                if (!(err instanceof PackError)) throw err
-                throw new AppError("This release can't be published yet.", {
-                    code: "invalid_package",
-                    problems: err.problems,
-                    manifestProblem: err.problems.some((p) => p.startsWith(MANIFEST_FILE)),
-                })
-            }
-            const cleanup = result.cleanup
-            result.cleanup = () => cleanup().finally(removeWork)
-            const refusal = await registryRefusal(result)
-            if (refusal) {
-                await result.cleanup().catch(() => {})
-                throw new AppError("This release can't be published yet.", {
-                    code: "invalid_package",
-                    ...refusal,
-                })
-            }
-            result.github = { owner, repo, tag, asset: asset.name }
-            const id = randomUUID()
-            prepared.set(id, result)
-            return {
-                ...describePrepared(id, result),
-                github: { ...result.github, fullName: `${owner}/${repo}` },
-            }
+                const work = await mkdtemp(path.join(os.tmpdir(), "beepm-github-"))
+                const removeWork = () => rm(work, { recursive: true, force: true })
+                let result
+                try {
+                    const file = path.join(work, "release.bee_pack")
+                    await downloadFile(asset.url, file, {
+                        fetch: ctx.fetch,
+                        expectedSize: asset.size,
+                    })
+                    result = await preparePublish(file, { handle: shared.handle })
+                } catch (err) {
+                    await removeWork()
+                    if (!(err instanceof PackError)) throw err
+                    logProblems(err.problems)
+                    throw new AppError("This release can't be published yet.", {
+                        code: "invalid_package",
+                        problems: err.problems,
+                        manifestProblem: err.problems.some((p) => p.startsWith(MANIFEST_FILE)),
+                    })
+                }
+                logPrepared(result)
+                const cleanup = result.cleanup
+                result.cleanup = () => cleanup().finally(removeWork)
+                const refusal = await registryRefusal(result)
+                if (refusal) {
+                    await result.cleanup().catch(() => {})
+                    logProblems(refusal.problems)
+                    throw new AppError("This release can't be published yet.", {
+                        code: "invalid_package",
+                        ...refusal,
+                    })
+                }
+                result.github = { owner, repo, tag, asset: asset.name }
+                const id = randomUUID()
+                prepared.set(id, result)
+                return {
+                    ...describePrepared(id, result),
+                    github: { ...result.github, fullName: `${owner}/${repo}` },
+                }
+            })
         },
 
         // options.watch (GitHub releases): publish the repo's new releases automatically too
@@ -245,15 +272,25 @@ export function publishHandlers(shared) {
             const report = throttle((progress) =>
                 deps.send("publish:progress", { id, ...progress }),
             )
+            const { fullName, version } = item.manifest
+            const github = item.github
+            const from = github ? ` from ${github.owner}/${github.repo} ${github.tag}` : ""
             try {
-                // A GitHub release is imported by the registry, which downloads it itself
-                const result = item.github
-                    ? await ctx.api.importGithub({ ...item.github, watch: Boolean(options?.watch) })
-                    : await publishPrepared(ctx.api, item, {
-                          onProgress: (sent, total) => report({ sent, total }),
-                      })
-                await discard(id)
-                return { result }
+                return await step(`Publishing ${fullName}@${version}${from}`, async () => {
+                    // A GitHub release is imported by the registry, which downloads it itself
+                    const result = github
+                        ? await ctx.api.importGithub({ ...github, watch: Boolean(options?.watch) })
+                        : await publishPrepared(ctx.api, item, {
+                              onProgress: (sent, total) => report({ sent, total }),
+                          })
+                    if (result?.watching) {
+                        log.info(
+                            `New releases of ${github.owner}/${github.repo} will be published automatically`,
+                        )
+                    }
+                    await discard(id)
+                    return { result }
+                })
             } finally {
                 report.flush()
                 item.uploading = false
@@ -323,13 +360,15 @@ export function publishHandlers(shared) {
                 })
             }
             const text = JSON.stringify(manifest, null, 4) + "\n"
-            if (!isFolder) {
-                await putFileInZip(target, MANIFEST_FILE, text)
-                return { file: target, insidePack: true }
-            }
-            const file = path.join(target, MANIFEST_FILE)
-            await writeFile(file, text)
-            return { file, insidePack: false }
+            return step(`Saving ${MANIFEST_FILE} in ${path.basename(target)}`, async () => {
+                if (!isFolder) {
+                    await putFileInZip(target, MANIFEST_FILE, text)
+                    return { file: target, insidePack: true }
+                }
+                const file = path.join(target, MANIFEST_FILE)
+                await writeFile(file, text)
+                return { file, insidePack: false }
+            })
         },
     }
 }

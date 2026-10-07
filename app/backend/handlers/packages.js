@@ -9,7 +9,7 @@ import {
     planInstall,
     uninstall,
 } from "@beepm/core/client"
-import { AppError, throttle } from "../util.js"
+import { AppError, fileSize, listOf, throttle } from "../util.js"
 
 const MAX_PLANS = 20
 
@@ -22,13 +22,22 @@ function specList(specs, { allowEmpty = false } = {}) {
     return list.map((spec) => spec.trim())
 }
 
+/** A plan's step in the log: "@a/b@1.0.0, 2.1 MB" or "@a/b 1.0.0 -> 1.1.0, 2.1 MB". */
+function describeStep({ name, from, to, change, size }) {
+    const versions =
+        change === "upgrade" || change === "downgrade"
+            ? `${name} ${from} -> ${to}`
+            : `${name}@${to}${change === "reinstall" ? " again" : ""}`
+    return `${versions}, ${fileSize(size)}`
+}
+
 /**
  * Install, update and uninstall. Installing is two steps so the window can show the plan first:
  * packages:plan returns the steps and a planId, packages:apply(planId) downloads them and sends
  * "packages:progress" events.
  */
 export function packageHandlers(shared) {
-    const { ctx, deps } = shared
+    const { ctx, deps, log, step } = shared
     const plans = new Map() // planId -> plan, until it's applied or discarded
 
     return {
@@ -55,26 +64,40 @@ export function packageHandlers(shared) {
                 const plan = plans.get(planId)
                 if (!plan) throw new AppError("That install plan is out of date. Try again.")
                 plans.delete(planId)
-                const report = throttle(
-                    (progress) => deps.send("packages:progress", { planId, ...progress }),
-                    { key: (p) => p.index },
-                )
-                try {
-                    const result = await applyPlan(ctx, plan, { onProgress: report })
-                    return {
-                        installed: result.installed.map(({ name, from, to, change, explicit }) => ({
-                            name,
-                            from,
-                            to,
-                            change,
-                            explicit,
-                        })),
-                        removed: result.removed,
-                        warnings: plan.warnings,
+                const names = plan.steps.map((s) => `${s.name}@${s.to}`)
+                const updating = names.length && plan.steps.every((s) => s.change === "upgrade")
+                const title = names.length
+                    ? `${updating ? "Updating" : "Installing"} ${listOf(names, "packages")}`
+                    : `Installing ${listOf(plan.markExplicit ?? [], "packages")}`
+                return step(title, async () => {
+                    for (const s of plan.steps) log.info(describeStep(s))
+                    for (const warning of plan.warnings) log.warn(warning)
+                    const report = throttle(
+                        (progress) => deps.send("packages:progress", { planId, ...progress }),
+                        { key: (p) => p.index },
+                    )
+                    try {
+                        const result = await applyPlan(ctx, plan, { onProgress: report })
+                        for (const name of result.removed) {
+                            log.info(`Removed ${name}: nothing needs it anymore`)
+                        }
+                        return {
+                            installed: result.installed.map(
+                                ({ name, from, to, change, explicit }) => ({
+                                    name,
+                                    from,
+                                    to,
+                                    change,
+                                    explicit,
+                                }),
+                            ),
+                            removed: result.removed,
+                            warnings: plan.warnings,
+                        }
+                    } finally {
+                        report.flush()
                     }
-                } finally {
-                    report.flush()
-                }
+                })
             }),
 
         "packages:discard-plan": async (planId) => {
@@ -84,32 +107,35 @@ export function packageHandlers(shared) {
 
         // Refuses (code "has_dependents") if other installed packages need one of them, unless force
         "packages:uninstall": (names, options = {}) =>
-            shared.lock(async () => {
+            shared.lock(() => {
                 const list = specList(names)
                 const force = Boolean(options?.force)
-                if (!force) {
-                    const installed = await loadInstalled(ctx.paths)
-                    const targets = list.map((spec) => findInstalled(installed, spec))
-                    const dependents = targets
-                        .map((name) => ({
-                            name,
-                            neededBy: Object.entries(installed.packages)
-                                .filter(
-                                    ([other, e]) =>
-                                        !targets.includes(other) && e.dependencies?.[name],
-                                )
-                                .map(([other]) => other),
-                        }))
-                        .filter((d) => d.neededBy.length)
-                    if (dependents.length) {
-                        const message = dependents
-                            .map((d) => `${d.name} is needed by ${d.neededBy.join(", ")}.`)
-                            .join(" ")
-                        throw new AppError(message, { code: "has_dependents", dependents })
+                return step(`Uninstalling ${listOf(list, "packages")}`, async () => {
+                    if (!force) {
+                        const installed = await loadInstalled(ctx.paths)
+                        const targets = list.map((spec) => findInstalled(installed, spec))
+                        const dependents = targets
+                            .map((name) => ({
+                                name,
+                                neededBy: Object.entries(installed.packages)
+                                    .filter(
+                                        ([other, e]) =>
+                                            !targets.includes(other) && e.dependencies?.[name],
+                                    )
+                                    .map(([other]) => other),
+                            }))
+                            .filter((d) => d.neededBy.length)
+                        if (dependents.length) {
+                            const message = dependents
+                                .map((d) => `${d.name} is needed by ${d.neededBy.join(", ")}.`)
+                                .join(" ")
+                            throw new AppError(message, { code: "has_dependents", dependents })
+                        }
                     }
-                }
-                const { removed } = await uninstall(ctx, list, { force })
-                return { removed }
+                    const { removed } = await uninstall(ctx, list, { force })
+                    for (const name of removed) log.info(`Removed ${name}`)
+                    return { removed }
+                })
             }),
 
         "packages:outdated": async () => ({ rows: await outdated(ctx) }),
@@ -120,7 +146,7 @@ export function packageHandlers(shared) {
  * Takes over packages installed by earlier BeePM versions. Adoption looks every package up in the registry
  * and then retires the old list, so it only runs while the registry can be reached.
  */
-export async function adoptOldInstalls({ ctx, deps, lock }) {
+export async function adoptOldInstalls({ ctx, deps, lock, log, step }) {
     const exists = await access(ctx.paths.legacyInstalled).then(
         () => true,
         () => false,
@@ -131,7 +157,16 @@ export async function adoptOldInstalls({ ctx, deps, lock }) {
     } catch {
         return
     }
-    const { adopted, unknown } = await lock(() => adoptLegacyInstalls(ctx))
+    const { adopted, unknown } = await lock(() =>
+        step("Taking over packages installed by an earlier BeePM version", async () => {
+            const result = await adoptLegacyInstalls(ctx)
+            for (const name of result.adopted) log.info(`Took over ${name}`)
+            if (result.unknown.length) {
+                log.warn(`Not in the registry, left alone: ${result.unknown.join(", ")}`)
+            }
+            return result
+        }),
+    )
     if (adopted.length) {
         deps.send("packages:changed", {})
         deps.send("app:notice", {

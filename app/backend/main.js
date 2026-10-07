@@ -3,9 +3,12 @@
  * The window talks to it through backend/preload.cjs; the work itself is in backend.js.
  */
 import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from "electron"
+import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import { beepmPaths } from "@beepm/core/client"
 import { createBackend } from "./backend.js"
+import { logger } from "./logger.js"
 import { isWebUrl } from "./util.js"
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -22,10 +25,17 @@ const QUEUED_EVENTS = new Set([
     "packages:changed",
 ])
 
+// The window's console output that goes in the log (see src/lib/logForwarding.js)
+const WINDOW_LOG_LEVELS = new Set(["info", "warn", "error", "debug"])
+
 // Electron's own files (caches, local storage) go in their own folder, not in BeePM's
 // %APPDATA%/beepm (which holds the packages and config)
 app.setName("BeePM")
 app.setPath("userData", path.join(app.getPath("appData"), "BeePM Desktop"))
+
+// Bugs in the main process go in the log, and BeePM keeps running
+process.on("uncaughtException", (error) => logger.error("Uncaught exception:", error))
+process.on("unhandledRejection", (reason) => logger.error("Unhandled promise rejection:", reason))
 
 let mainWindow = null
 let backend = null
@@ -56,6 +66,7 @@ function focusWindow() {
  * beepm://publish?file=<.bee_pack path> opens Publish with that file
  */
 function handleProtocolUrl(url) {
+    logger.info(`Opened by a link: ${url}`)
     let parsed
     try {
         parsed = new URL(url)
@@ -120,6 +131,11 @@ function createWindow() {
     win.webContents.on("did-start-loading", () => {
         rendererReady = false
     })
+    win.webContents.on("render-process-gone", (_event, details) =>
+        logger.error(`The window stopped: ${details.reason} (exit code ${details.exitCode})`),
+    )
+    win.on("unresponsive", () => logger.warn("The window stopped responding"))
+    win.on("responsive", () => logger.info("The window responds again"))
 
     // Links never open Electron windows or replace the app: they go to the system browser
     win.webContents.setWindowOpenHandler(({ url }) => {
@@ -141,6 +157,10 @@ function createWindow() {
         })
         win.loadURL(DEV_URL).catch(() => {})
     } else {
+        win.webContents.on("did-fail-load", (_event, code, description, url, isMainFrame) => {
+            if (isMainFrame)
+                logger.error(`The window couldn't load ${url}: ${description} (${code})`)
+        })
         win.loadFile(path.join(app.getAppPath(), "dist", "index.html")).catch(() => {})
     }
     return win
@@ -150,6 +170,11 @@ function registerIpc() {
     for (const channel of Object.keys(backend.handlers)) {
         ipcMain.handle(channel, (_event, ...args) => backend.invoke(channel, ...args))
     }
+    ipcMain.on("app:log", (event, level, text) => {
+        if (event.sender !== mainWindow?.webContents) return
+        if (!WINDOW_LOG_LEVELS.has(level) || typeof text !== "string") return
+        logger.fromWindow("Window", level, text)
+    })
     // The window calls this once it listens for events; anything that arrived earlier is sent now
     ipcMain.handle("app:ready", (event) => {
         if (event.sender !== mainWindow?.webContents) return { ok: true }
@@ -162,6 +187,12 @@ function registerIpc() {
 if (!app.requestSingleInstanceLock()) {
     app.quit()
 } else {
+    logger.initialize({
+        dir: path.join(beepmPaths(process.env).root, "logs"),
+        version: app.getVersion(),
+        debug: isDev,
+    })
+    logger.info(`${process.platform} ${os.release()}, Electron ${process.versions.electron}`)
     registerProtocol()
 
     // Windows and Linux: a beepm:// link starts a second instance, which hands its URL over
@@ -188,6 +219,7 @@ if (!app.requestSingleInstanceLock()) {
                     ? dialog.showOpenDialog(mainWindow, options)
                     : dialog.showOpenDialog(options),
             send,
+            log: logger,
         })
         registerIpc()
         createWindow()
@@ -205,12 +237,17 @@ if (!app.requestSingleInstanceLock()) {
         if (process.platform !== "darwin") app.quit()
     })
 
-    // Remove temporary files (prepared packages) before quitting
+    // Remove temporary files (prepared packages) before quitting, then close the log
     let disposed = false
     app.on("will-quit", (event) => {
-        if (disposed || !backend) return
+        if (disposed) return
         disposed = true
         event.preventDefault()
-        backend.dispose().finally(() => app.quit())
+        Promise.resolve(backend?.dispose())
+            .finally(() =>
+                // The log's last lines reach the file, unless that takes over a second
+                Promise.race([logger.close(), new Promise((done) => setTimeout(done, 1000))]),
+            )
+            .finally(() => app.quit())
     })
 }

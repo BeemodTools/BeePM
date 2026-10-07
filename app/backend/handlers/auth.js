@@ -2,12 +2,15 @@ import { randomUUID } from "node:crypto"
 import { beginLogin, defaultClientName, RegistryError } from "@beepm/core/client"
 import { AppError, isWebUrl, requireText } from "../util.js"
 
+const PROVIDERS = { discord: "Discord", github: "GitHub" }
+const providerName = (provider) => PROVIDERS[provider] ?? provider
+
 /**
  * Browser login and account linking (DESIGN.md "Browser login"): the window shows the confirm
  * code while the browser is open, and gets an "auth:login-result" event when it's done.
  */
 export function authHandlers(shared) {
-    const { ctx, deps } = shared
+    const { ctx, deps, log, step } = shared
     const api = ctx.api
     let flow = null // the login or link in progress: { id, controller }
 
@@ -29,6 +32,8 @@ export function authHandlers(shared) {
         const id = randomUUID()
         const controller = new AbortController()
         flow = { id, controller }
+        const what = kind === "login" ? "Login" : "Linking"
+        log.info(`${what} started in the browser`)
 
         session
             .wait({ signal: controller.signal })
@@ -36,18 +41,27 @@ export function authHandlers(shared) {
                 if (flow?.id === id) flow = null
                 if (kind === "login") {
                     await shared.saveLogin({ token: result.token, user: result.user })
+                    log.info(`Logged in as @${result.user.handle}`)
                     deps.send("auth:login-result", { id, kind, ok: true, user: result.user })
                 } else {
+                    const identity = result.identity
+                    log.info(
+                        identity
+                            ? `Linked ${providerName(identity.provider)} account ${identity.username}`
+                            : "Linked an account",
+                    )
                     deps.send("auth:login-result", {
                         id,
                         kind,
                         ok: true,
-                        identity: result.identity,
+                        identity,
                     })
                 }
             })
             .catch((err) => {
                 if (flow?.id === id) flow = null
+                if (err.reason === "aborted") log.info(`${what} cancelled`)
+                else log.warn(`${what} failed: ${err.message}`)
                 deps.send("auth:login-result", {
                     id,
                     kind,
@@ -98,7 +112,11 @@ export function authHandlers(shared) {
             } catch (err) {
                 if (!(err instanceof RegistryError)) throw err
                 if (err.status === 401) {
-                    await shared.clearLogin(login)
+                    if (await shared.clearLogin(login)) {
+                        log.info(
+                            "The registry no longer accepts the saved login, so it was removed",
+                        )
+                    }
                     return { loggedIn: false, expired: true, message: err.message }
                 }
                 const saved = {
@@ -126,7 +144,7 @@ export function authHandlers(shared) {
             const body = {}
             if (changes?.displayName !== undefined) body.displayName = changes.displayName
             if (changes?.avatar !== undefined) body.avatar = changes.avatar
-            const me = await api.updateMe(body)
+            const me = await step("Saving account settings", () => api.updateMe(body))
             await shared.saveLogin({ token: shared.login.token, user: me.user }).catch(() => {})
             return { user: me.user, identities: me.identities, avatarSource: me.avatarSource }
         },
@@ -141,23 +159,28 @@ export function authHandlers(shared) {
         },
 
         "auth:unlink": async (provider) => {
-            const { identities } = await api.unlink(
-                requireText(provider, "Say which account to unlink."),
+            const name = requireText(provider, "Say which account to unlink.")
+            const { identities } = await step(`Unlinking ${providerName(name)}`, () =>
+                api.unlink(name),
             )
             return { identities }
         },
 
         // Revokes the token on the registry, then forgets it (even if the registry can't be reached)
-        "auth:logout": async () => {
-            cancelFlow()
-            const revoked = shared.login
-                ? await api.logout().then(
-                      () => true,
-                      () => false,
-                  )
-                : true
-            await shared.clearLogin()
-            return { revoked }
-        },
+        "auth:logout": () =>
+            step("Logging out", async () => {
+                cancelFlow()
+                const revoked = shared.login
+                    ? await api.logout().then(
+                          () => true,
+                          () => false,
+                      )
+                    : true
+                if (!revoked) {
+                    log.warn("Couldn't reach the registry, so the login was only removed here")
+                }
+                await shared.clearLogin()
+                return { revoked }
+            }),
     }
 }

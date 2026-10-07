@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld("beepm", {
         info: call("app:info"),
         openExternal: call("app:open-external"),
         openPackagesFolder: call("app:open-packages-folder"),
+        openLogsFolder: call("app:open-logs-folder"),
     },
     auth: {
         status: call("auth:status"),
@@ -82,6 +83,9 @@ contextBridge.exposeInMainWorld("beepm", {
         removePackage: call("admin:remove-package"),
         restorePackage: call("admin:restore-package"),
     },
+
+    /** Console output for the log file (src/lib/logForwarding.js). */
+    log: (level, text) => ipcRenderer.send("app:log", level, text),
 
     /** Listens for an event from the main process; returns a function that stops listening. */
     on(event, callback) {

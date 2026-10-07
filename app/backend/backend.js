@@ -10,7 +10,17 @@ import { adoptOldInstalls, packageHandlers } from "./handlers/packages.js"
 import { publishHandlers } from "./handlers/publish.js"
 import { registryHandlers } from "./handlers/registry.js"
 import { createAppTokenStore } from "./tokenStore.js"
-import { createLock, toFailure } from "./util.js"
+import { createLock, isExpected, toFailure } from "./util.js"
+
+/** Stands in for the log when none is given (tests): only bugs are printed. */
+const quietLog = {
+    section: (_title, fn) => fn(),
+    info() {},
+    warn() {},
+    error: (...args) => console.error(...args),
+    debug() {},
+    getLogsDirectory: () => null,
+}
 
 /**
  * Everything the window can ask the main process to do, kept free of Electron so it can run
@@ -18,9 +28,12 @@ import { createLock, toFailure } from "./util.js"
  *   env, fetch, appVersion, safeStorage            (safeStorage encrypts the saved token)
  *   openExternal(url), openPath(dir), showOpenDialog(options)
  *   send(channel, payload)                         events for the window
+ *   log                                            the log file (logger.js)
  *
  * invoke(channel, ...args) never throws: it resolves to { ok: true, ...data } or
- * { ok: false, error, code?, problems?, ... }.
+ * { ok: false, error, code?, problems?, ... }. What changes something (installs, publishing,
+ * BEE2 setup, ...) is a step in the log, with how it ended; failed requests and bugs are logged
+ * too.
  */
 export async function createBackend(deps = {}) {
     const {
@@ -28,8 +41,26 @@ export async function createBackend(deps = {}) {
         fetch = globalThis.fetch,
         appVersion = "0.0.0",
         safeStorage = null,
+        log = quietLog,
     } = deps
     const send = deps.send ?? (() => {})
+    const reported = new WeakSet() // errors whose step already logged them
+
+    /**
+     * Runs `fn` as a step in the log: its title, what's logged while it runs, then how it
+     * ended. A bug's stack trace goes in the step too.
+     */
+    const step = (title, fn) =>
+        log.section(title, async () => {
+            try {
+                return await fn()
+            } catch (err) {
+                if (!isExpected(err)) log.error(err)
+                if (err && typeof err === "object") reported.add(err)
+                throw err
+            }
+        })
+
     const ctx = await createClientContext({ env, fetch, userAgent: `beepm-app/${appVersion}` })
     const tokens = createAppTokenStore(
         path.join(ctx.paths.configDir, "credentials-app.json"),
@@ -47,6 +78,8 @@ export async function createBackend(deps = {}) {
                 deps.showOpenDialog ?? (async () => ({ canceled: true, filePaths: [] })),
         },
         lock: createLock(),
+        log,
+        step,
         disposers: [],
         login: null, // { registry, token, user, savedAt }
 
@@ -115,9 +148,14 @@ export async function createBackend(deps = {}) {
         try {
             return { ok: true, ...((await handlers[channel](...args)) ?? {}) }
         } catch (err) {
+            if (!reported.has(err)) {
+                if (isExpected(err)) log.warn(`${channel} failed: ${err.message}`)
+                else log.error(`${channel} failed:`, err)
+            }
             // The registry no longer accepts this login (revoked or expired): forget it
             if (err instanceof RegistryError && err.status === 401 && login) {
                 if (await shared.clearLogin(login).catch(() => false)) {
+                    log.info("The registry no longer accepts the saved login, so it was removed")
                     send("auth:changed", { loggedIn: false, reason: "expired" })
                 }
             }
@@ -137,14 +175,14 @@ export async function createBackend(deps = {}) {
          * installs from earlier BeePM versions. Never throws.
          */
         startup: () => {
+            log.info(`Registry: ${ctx.registry}`)
+            log.info(`Packages folder: ${ctx.paths.packages}`)
+            log.info(shared.login ? `Logged in as @${shared.handle}` : "Not logged in")
             watchInstalled().catch((err) =>
-                console.warn(`Can't watch installed.json for changes: ${err.message}`),
+                log.warn(`Can't watch installed.json for changes: ${err.message}`),
             )
-            return adoptOldInstalls(shared).catch((err) =>
-                console.warn(
-                    `Couldn't take over packages installed by an earlier BeePM version: ${err.message}`,
-                ),
-            )
+            // A failed step is in the log already
+            return adoptOldInstalls(shared).catch(() => {})
         },
         /** Removes temporary files (prepared packages). */
         async dispose() {

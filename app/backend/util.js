@@ -9,6 +9,12 @@ export class AppError extends Error {
     }
 }
 
+/** Whether an error has a message meant for the user (anything else is a bug or a system error). */
+export const isExpected = (err) =>
+    [AppError, RegistryError, PackError, ManifestError, LoginError, InstallError, Bee2Error].some(
+        (type) => err instanceof type,
+    )
+
 /**
  * Turns an error into the { ok: false, error, code?, problems?, ... } that handlers return.
  * Registry errors keep their code and status (0 = the registry couldn't be reached).
@@ -32,9 +38,8 @@ export function toFailure(err) {
         failure.code = "install"
     } else if (err instanceof Bee2Error) {
         failure.code = "bee2"
-    } else {
-        if (err?.code) failure.code = err.code
-        console.error(err)
+    } else if (err?.code) {
+        failure.code = err.code
     }
     // "Can't be published:\n- a\n- b" plus problems [a, b]: keep just the first line
     if (failure.problems?.length) failure.error = failure.error.split("\n")[0].replace(/:$/, ".")
@@ -95,6 +100,17 @@ export function isWebUrl(url) {
         return false
     }
 }
+
+/** A file size for the log: "512 KB" or "3.4 MB". */
+export function fileSize(bytes) {
+    const size = Number(bytes) || 0
+    if (size < 1048576) return `${Math.ceil(size / 1024)} KB`
+    return `${(size / 1048576).toFixed(1)} MB`
+}
+
+/** Up to three names, or how many there are: "@a/b, @c/d" or "5 packages". */
+export const listOf = (names, noun) =>
+    names.length <= 3 ? names.join(", ") : `${names.length} ${noun}`
 
 /** A trimmed string, or undefined if it's empty or not a string. */
 export const optionalText = (value) =>

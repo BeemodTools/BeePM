@@ -578,6 +578,10 @@ const bridge = {
             console.info(`[dev bridge] would open ${PACKAGES_DIR}`)
             return ok()
         },
+        openLogsFolder: async () => {
+            console.info("[dev bridge] would open the logs folder")
+            return ok()
+        },
     },
 
     auth: {

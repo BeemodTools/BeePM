@@ -225,6 +225,7 @@ banReason, handle}`, `GET /v1/admin/audit`, `POST /v1/admin/import-legacy`.
 - Files live in `%APPDATA%/beepm/`. Packages are in `packages/` (the folder BEE2 is
   hooked to), and `config/` holds `config.json`, `installed.json` and `credentials.json`
   (the desktop app keeps its token in `credentials-app.json`, encrypted with `safeStorage`).
+  The desktop app's logs are in `logs/` (the 10 most recent are kept).
 - **Setup (init):**
   - Pick a BEE2 release. The client downloads the matching BEE2-items release
     (BEE2 `2.4.<minor>[.x]` maps to the highest items `v4.<minor>.*`) and extracts its

@@ -7,7 +7,7 @@
     "description": "BeePM desktop app",
     "author": "Areng",
     "scripts": {
-        "dev": "concurrently -k \"vite\" \"electron .\"",
+        "dev": "concurrently -k -s command-app -n vite,app \"vite\" \"electron .\"",
         "build": "vite build && electron-builder",
         "start": "electron .",
         "format": "prettier --write .",
