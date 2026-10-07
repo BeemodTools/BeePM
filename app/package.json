@@ -11,7 +11,8 @@
         "build": "vite build && electron-builder",
         "start": "electron .",
         "format": "prettier --write .",
-        "lint": "eslint . --fix"
+        "lint": "eslint . --fix",
+        "test": "node --test"
     },
     "dependencies": {
         "@beepm/core": "*",

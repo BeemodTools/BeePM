@@ -19,6 +19,7 @@ export default function AppProvider({ children }) {
     const [auth, setAuth] = useState({ loading: true, loggedIn: false })
     const [bee2, setBee2] = useState(null)
     const [installed, setInstalled] = useState({})
+    const [local, setLocal] = useState({}) // packages imported from this PC, by BEE2 ID
     const [outdated, setOutdated] = useState({ rows: null, loading: false, error: null })
     const [toasts, setToasts] = useState([])
     const [login, setLoginState] = useState(null)
@@ -86,7 +87,10 @@ export default function AppProvider({ children }) {
     const refreshInstalled = useCallback(async () => {
         const request = ++installedRequest.current
         const res = await api.packages.installed()
-        if (request === installedRequest.current && res.ok) setInstalled(res.packages)
+        if (request === installedRequest.current && res.ok) {
+            setInstalled(res.packages)
+            setLocal(res.local ?? {})
+        }
         checkUpdates()
     }, [checkUpdates])
 
@@ -179,6 +183,9 @@ export default function AppProvider({ children }) {
             }
             if (res.removed.length) {
                 notify(`Removed ${res.removed.join(", ")} (no longer needed).`, "info")
+            }
+            if (res.replacedLocal?.length) {
+                notify(`Replaced your local copy of ${res.replacedLocal.join(", ")}.`, "info")
             }
             if (showWarnings && names.length && res.warnings.length) {
                 notify(res.warnings.join(" "), "warning")
@@ -368,6 +375,7 @@ export default function AppProvider({ children }) {
         bee2,
         bee2Version,
         installed,
+        local,
         outdated,
         outdatedByName,
         toasts,

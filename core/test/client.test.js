@@ -1,20 +1,26 @@
 import assert from "node:assert/strict"
+import { createHash } from "node:crypto"
 import { access, mkdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { after, before, test } from "node:test"
 import {
     adoptLegacyInstalls,
+    applyPlan,
     bee2Paths,
     bee2Status,
     beepmPaths,
+    findPackages,
     getGithubJson,
     getIniValue,
     hookBee2,
+    importLocal,
     installBasePackages,
     InstallError,
     listGithubReleases,
     listGithubRepos,
+    loadInstalled,
     packageFileName,
+    planImport,
     suggestManifest,
     planInstall,
     removeIniKey,
@@ -23,7 +29,8 @@ import {
     setIniValue,
     unhookBee2,
 } from "../src/client/index.js"
-import { makeZip, tempDir } from "./helpers.js"
+import { readPack } from "../src/pack.js"
+import { infoTxt, makeZip, tempDir } from "./helpers.js"
 
 // Never close the real BEE2 while testing
 process.env.BEEPM_NO_CLOSE_BEE2 = "1"
@@ -458,6 +465,68 @@ test("taking over old installs only accepts real package names from the registry
     await access(path.join(paths.packages, "areng@good-items.bee_pack"))
     await access(path.join(paths.packages, "evil_EVIL_ITEMS.bee_pack")) // left where it was
     assert.throws(() => packageFileName("x/../../PWNED"), /isn't a package name/)
+})
+
+test("importing packages from this PC: BeePM's own first, and they replace local copies later", async () => {
+    const dir = path.join(tmp.dir, "import-from")
+    await mkdir(path.join(dir, "folder-pack"), { recursive: true })
+    await writeFile(path.join(dir, "folder-pack", "info.txt"), infoTxt("FOLDER_PACK"))
+    await writeFile(path.join(dir, "folder-pack", "notes.md"), "local packages keep every file")
+    await makeZip(path.join(dir, "mine.bee_pack"), { "info.txt": infoTxt("MY_PACK") })
+    await makeZip(path.join(dir, "published.zip"), { "info.txt": infoTxt("APP") })
+    await makeZip(path.join(dir, "clean.bee_pack"), { "info.txt": infoTxt("BEE2_CLEAN_STYLE") })
+    await writeFile(path.join(dir, "broken.bee_pack"), "not a zip")
+    await writeFile(path.join(dir, "readme.txt"), "not a package")
+
+    // On BeePM: @a/app has the ID APP, and @me/mine (below) has MY_PACK
+    const bytes = Buffer.from("the published copy")
+    const sha256 = createHash("sha256").update(bytes).digest("hex")
+    const all = {
+        ...docs,
+        "@me/mine": docOf("@me/mine", "MY_PACK", [v("1.0.0", { sha256, size: bytes.length })]),
+    }
+    const ctx = fakeContext("import", all)
+    ctx.api.lookup = async ({ beeId }) => ({
+        packages: beeId === "APP" ? ["@a/app"] : [],
+    })
+    ctx.api.downloadUrl = () => "https://dl.test/mine"
+    ctx.fetch = async () => new Response(bytes)
+    await saveConfig(ctx.paths, {
+        bee2: { version: "2.4.46.0", basePackages: ["BEE2_CLEAN_STYLE"] },
+    })
+
+    const { items, offline } = await planImport(ctx, await findPackages(dir))
+    assert.equal(offline, false)
+    assert.deepEqual(
+        Object.fromEntries(items.map((item) => [path.basename(item.path), item.action])),
+        {
+            "broken.bee_pack": "skip",
+            "clean.bee_pack": "skip",
+            "folder-pack": "local",
+            "mine.bee_pack": "local",
+            "published.zip": "beepm",
+        },
+    )
+    assert.equal(items.find((item) => item.action === "beepm").package, "@a/app")
+
+    // Copied in; a folder is zipped with all its files
+    for (const item of items.filter((i) => i.action === "local")) {
+        await importLocal(ctx.paths, item)
+    }
+    let installed = await loadInstalled(ctx.paths)
+    assert.deepEqual(Object.keys(installed.local).sort(), ["FOLDER_PACK", "MY_PACK"])
+    const zipped = await readPack(path.join(ctx.paths.packages, "folder_pack.local.bee_pack"))
+    assert.ok(zipped.files.includes("notes.md"))
+
+    // Installing @me/mine from BeePM replaces the local copy with the same ID
+    const plan = await planInstall(ctx, ["@me/mine"])
+    assert.ok(plan.warnings.some((w) => w.includes("replaces your local copy")))
+    const result = await applyPlan(ctx, plan)
+    assert.deepEqual(result.replacedLocal, ["Test package"])
+    installed = await loadInstalled(ctx.paths)
+    assert.deepEqual(Object.keys(installed.local), ["FOLDER_PACK"])
+    await assert.rejects(access(path.join(ctx.paths.packages, "my_pack.local.bee_pack")))
+    await access(path.join(ctx.paths.packages, "me@mine.bee_pack"))
 })
 
 test("suggestManifest continues a published package: its name, the next version", async () => {

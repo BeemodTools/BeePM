@@ -5,15 +5,28 @@ import { createRoot } from "react-dom/client"
 import { ThemeProvider } from "@mui/material/styles"
 import CssBaseline from "@mui/material/CssBaseline"
 import App from "./App.jsx"
+import UpdateToast from "./components/UpdateToast.jsx"
 import { theme } from "./theme.js"
 import "./index.css"
+
+// The same page also draws the window that asks about an update (backend/main.js askUpdate)
+const params = new URLSearchParams(window.location.search)
+const toast = params.get("toast") === "update"
 
 function render() {
     createRoot(document.getElementById("root")).render(
         <StrictMode>
             <ThemeProvider theme={theme}>
                 <CssBaseline />
-                <App />
+                {toast ? (
+                    <UpdateToast
+                        name={params.get("name")}
+                        from={params.get("from")}
+                        to={params.get("to")}
+                    />
+                ) : (
+                    <App />
+                )}
             </ThemeProvider>
         </StrictMode>,
     )

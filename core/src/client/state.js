@@ -34,13 +34,18 @@ export const saveConfig = (paths, config) => writeJson(paths.config, config)
 /**
  * installed.json:
  * { "packages": { "@scope/name": { version, range, explicit, file, sha256, beeId,
- *                                  dependencies, compatibleWith, installedAt } } }
- * `explicit` is false for packages installed only because something depends on them.
+ *                                  dependencies, compatibleWith, installedAt } },
+ *   "local": { "<BEE2 ID>": { name, file, sha256, from, importedAt } } }
+ * `explicit` is false for packages installed only because something depends on them. `local`
+ * holds packages imported from this PC (see local.js).
  */
 export async function loadInstalled(paths) {
     const data = await readJson(paths.installed, null)
-    return data?.packages ? data : { packages: {} }
+    return { packages: data?.packages ?? {}, local: data?.local ?? {} }
 }
 
 export const saveInstalled = (paths, installed) =>
-    writeJson(paths.installed, { packages: installed.packages })
+    writeJson(paths.installed, {
+        packages: installed.packages,
+        ...(Object.keys(installed.local ?? {}).length ? { local: installed.local } : {}),
+    })

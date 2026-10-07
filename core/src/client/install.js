@@ -276,6 +276,12 @@ export async function planInstall(ctx, specs, { update = false, force = false } 
               )
               .map(([n]) => n)
         : []
+    // BeePM's packages come first: one with the same BEE2 ID as a local package replaces it
+    for (const step of steps) {
+        const local = installed.local[step.beeId]
+        if (local)
+            warnings.push(`${step.name} replaces your local copy of ${local.name ?? step.name}.`)
+    }
     return { steps, warnings: [...new Set(warnings)], markExplicit }
 }
 
@@ -307,6 +313,7 @@ async function pruneOrphans(paths, installed) {
 export async function applyPlan(ctx, plan, { onProgress } = {}) {
     const { api, paths, fetch = globalThis.fetch } = ctx
     const installed = await loadInstalled(paths)
+    const replacedLocal = [] // names of local packages these replaced (see local.js)
     for (const name of plan.markExplicit ?? []) {
         if (installed.packages[name]) installed.packages[name].explicit = true
     }
@@ -330,6 +337,13 @@ export async function applyPlan(ctx, plan, { onProgress } = {}) {
         if (previous?.file && previous.file !== file) {
             await rm(path.join(paths.packages, previous.file), { force: true })
         }
+        // A local package with the same BEE2 ID gives way (BEE2 can't load both)
+        const local = installed.local[step.beeId]
+        if (local) {
+            await rm(path.join(paths.packages, local.file), { force: true })
+            delete installed.local[step.beeId]
+            replacedLocal.push(local.name ?? step.beeId)
+        }
         installed.packages[step.name] = {
             version: step.to,
             range: step.range,
@@ -345,7 +359,7 @@ export async function applyPlan(ctx, plan, { onProgress } = {}) {
     }
     const removed = await pruneOrphans(paths, installed)
     await saveInstalled(paths, installed)
-    return { installed: plan.steps, removed }
+    return { installed: plan.steps, removed, replacedLocal }
 }
 
 /** Plans and applies in one go. Returns { installed, removed, warnings }. */

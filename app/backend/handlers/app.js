@@ -1,7 +1,8 @@
 import { mkdir } from "node:fs/promises"
 import { AppError, isWebUrl } from "../util.js"
 
-export function appHandlers({ ctx, deps, log }) {
+export function appHandlers(shared) {
+    const { ctx, deps, log } = shared
     return {
         "app:info": async () => ({
             version: deps.appVersion,
@@ -22,6 +23,23 @@ export function appHandlers({ ctx, deps, log }) {
             const problem = await deps.openPath(ctx.paths.packages)
             if (problem) throw new AppError(problem)
             return {}
+        },
+
+        "app:settings": async () => ({ settings: await shared.appSettings() }),
+
+        // { background?: boolean, ignoredUpdates?: [package names] (to ask about them again) }
+        "app:update-settings": async (changes = {}) => {
+            const update = {}
+            if (typeof changes?.background === "boolean") update.background = changes.background
+            if (Array.isArray(changes?.ignoredUpdates)) {
+                update.ignoredUpdates = changes.ignoredUpdates.filter((n) => typeof n === "string")
+            }
+            if (changes?.trayHintShown === true) update.trayHintShown = true
+            await shared.settings.update(update)
+            const settings = await shared.appSettings()
+            log.info(`Settings: run in the background ${settings.background ? "on" : "off"}`)
+            shared.onSettingsChanged(settings)
+            return { settings }
         },
 
         "app:open-logs-folder": async () => {

@@ -33,6 +33,38 @@ export function closeBee2() {
     })
 }
 
+/** Whether BEE2 is running (BEE2.exe on Windows, a BEE2 process elsewhere). */
+export function isBee2Running() {
+    const [command, args] =
+        process.platform === "win32"
+            ? ["tasklist", ["/FI", "IMAGENAME eq BEE2.exe", "/FO", "CSV", "/NH"]]
+            : ["pgrep", ["-x", "BEE2"]]
+    return new Promise((resolve) => {
+        execFile(command, args, { windowsHide: true }, (err, stdout) => {
+            if (process.platform !== "win32") return resolve(!err)
+            resolve(!err && /"BEE2\.exe"/i.test(String(stdout)))
+        })
+    })
+}
+
+/** The program file of the running BEE2 (to open it again after updating), or null. */
+export function findBee2Program() {
+    if (process.platform !== "win32") return Promise.resolve(null)
+    const script =
+        "(Get-Process -Name BEE2 -ErrorAction SilentlyContinue | Select-Object -First 1).Path"
+    return new Promise((resolve) => {
+        execFile(
+            "powershell",
+            ["-NoProfile", "-NonInteractive", "-Command", script],
+            { windowsHide: true },
+            (err, stdout) => {
+                const file = String(stdout ?? "").trim()
+                resolve(!err && file ? file : null)
+            },
+        )
+    })
+}
+
 // ---------- config.cfg editing ----------
 // BEE2's config.cfg is a Python configparser file. These edit one line and keep
 // everything else (comments, order, other settings) exactly as it was.

@@ -220,6 +220,10 @@ const state = {
             installedAt: days(30),
         },
     },
+    // Packages imported from this PC, by BEE2 ID
+    local: {},
+    appSettings: { background: true, ignoredUpdates: ["@mel/mel-sounds"], trayHintShown: true },
+    imports: new Map(),
     plans: new Map(),
     prepared: new Map(),
     // package path -> its bee-package.json (folders start without one)
@@ -579,8 +583,20 @@ const bridge = {
             console.info(`[dev bridge] would open ${PACKAGES_DIR}`)
             return ok()
         },
+        settings: async () => ok({ settings: clone(state.appSettings) }),
+        updateSettings: async (changes = {}) => {
+            Object.assign(state.appSettings, changes)
+            return ok({ settings: clone(state.appSettings) })
+        },
         openLogsFolder: async () => {
             console.info("[dev bridge] would open the logs folder")
+            return ok()
+        },
+    },
+
+    toast: {
+        answer: async (value) => {
+            console.info(`[dev bridge] update question answered: ${value}`)
             return ok()
         },
     },
@@ -693,7 +709,109 @@ const bridge = {
     },
 
     packages: {
-        installed: async () => ok({ packages: clone(state.installed) }),
+        installed: async () => ok({ packages: clone(state.installed), local: clone(state.local) }),
+        pickImport: async (kind) =>
+            ok({
+                canceled: false,
+                path:
+                    kind === "folder"
+                        ? "C:\\Users\\you\\Documents\\BEE2 packages"
+                        : "C:\\Users\\you\\Downloads\\portal-props.bee_pack",
+            }),
+        // A folder of packages: one on BeePM, one installed already, one of BEE2's own, two local
+        importScan: async (target) => {
+            await sleep(400)
+            const items = String(target).endsWith(".bee_pack")
+                ? [
+                      {
+                          name: "Portal Props",
+                          file: "portal-props.bee_pack",
+                          beeId: "PORTAL_PROPS",
+                          action: "local",
+                          replaces: Boolean(state.local.PORTAL_PROPS),
+                      },
+                  ]
+                : [
+                      {
+                          name: "Mel Sounds",
+                          file: "mel.zip",
+                          action: "beepm",
+                          package: "@mel/mel-sounds",
+                      },
+                      {
+                          name: "Areng's Items",
+                          file: "ArengItems.bee_pack",
+                          action: "skip",
+                          reason: "@areng14/arengitems is installed from BeePM",
+                      },
+                      {
+                          name: "Clean Style",
+                          file: "clean_style.bee_pack",
+                          action: "skip",
+                          reason: "It's one of BEE2's own packages",
+                      },
+                      {
+                          name: "My Test Chamber Kit",
+                          file: "test-kit",
+                          beeId: "TEST_KIT",
+                          action: "local",
+                          replaces: Boolean(state.local.TEST_KIT),
+                      },
+                      {
+                          name: "Old Signage",
+                          file: "old_signage.zip",
+                          beeId: "OLD_SIGNAGE",
+                          action: "local",
+                          replaces: Boolean(state.local.OLD_SIGNAGE),
+                      },
+                  ]
+            const importId = rid()
+            state.imports.set(importId, { target, items })
+            return ok({
+                importId,
+                offline: false,
+                items: items.map(({ beeId: _id, ...item }) => ({ reason: null, ...item })),
+            })
+        },
+        importApply: async (importId) => {
+            await sleep(700)
+            const scan = state.imports.get(importId)
+            if (!scan) return fail("That import is out of date. Try again.")
+            state.imports.delete(importId)
+            const imported = []
+            const installed = []
+            for (const item of scan.items) {
+                if (item.action === "local") {
+                    state.local[item.beeId] = {
+                        name: item.name,
+                        file: `${item.beeId.toLowerCase()}.local.bee_pack`,
+                        from: `${scan.target}${item.file === "portal-props.bee_pack" ? "" : `\\${item.file}`}`,
+                        importedAt: new Date().toISOString(),
+                    }
+                    imported.push(item.name)
+                } else if (item.action === "beepm") {
+                    const doc = state.docs.get(item.package)
+                    state.installed[item.package] = {
+                        version: doc.latest,
+                        range: "*",
+                        explicit: true,
+                        file: `${item.package.slice(1).replace("/", "@")}.bee_pack`,
+                        beeId: doc.beeId,
+                        dependencies: {},
+                        compatibleWith: null,
+                        installedAt: new Date().toISOString(),
+                    }
+                    installed.push(`${item.package}@${doc.latest}`)
+                }
+            }
+            return ok({ imported, installed })
+        },
+        removeLocal: async (beeId) => {
+            await sleep(200)
+            if (!state.local[beeId]) return fail("That local package isn't there anymore.")
+            delete state.local[beeId]
+            return ok()
+        },
         plan: async (specs = [], options = {}) => {
             await sleep(300)
             try {

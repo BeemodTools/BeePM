@@ -75,13 +75,14 @@ after(async () => {
  * A backend like the one main.js creates, with Electron's parts replaced by recorders.
  * fetch: a stand-in for the network (e.g. to play GitHub); log: a Logger.
  */
-async function startBackend({ fetch, log } = {}) {
+async function startBackend({ fetch, log, onSettingsChanged } = {}) {
     const opened = []
     const events = []
     const backend = await createBackend({
         env,
         fetch,
         log,
+        onSettingsChanged,
         appVersion: "1.0.0-test",
         openExternal: async (url) => opened.push(url),
         send: (channel, payload) => events.push({ channel, payload }),
@@ -459,3 +460,79 @@ test(
         assert.equal(res.error, "Choose a file or folder on this PC.")
     },
 )
+
+test("importing from this PC: packages on BeePM come from there, the rest are copied in", async () => {
+    const { backend, nextEvent } = await startBackend()
+    const started = await backend.invoke("auth:login")
+    await finishInBrowser(started.url, "Importer", "importer")
+    assert.equal((await nextEvent("auth:login-result")).ok, true)
+
+    // A package on BeePM...
+    const published = path.join(dir, "importer-items")
+    await mkdir(published, { recursive: true })
+    await writeFile(
+        path.join(published, "info.txt"),
+        '"ID" "IMPORTER_ITEMS"\n"Name" "Importer Items"\n',
+    )
+    await writeFile(
+        path.join(published, "bee-package.json"),
+        JSON.stringify({ name: "importer-items", version: "1.0.0" }),
+    )
+    const prepared = await backend.invoke("publish:prepare", published)
+    assert.equal((await backend.invoke("publish:upload", prepared.id)).ok, true)
+
+    // ...and a folder of packages on this PC: a copy of that one, and one of the user's own
+    const saved = path.join(dir, "saved-packages")
+    await mkdir(path.join(saved, "my-own"), { recursive: true })
+    await writeFile(
+        path.join(saved, "copy.bee_pack"),
+        await zipBytes({ "info.txt": '"ID" "IMPORTER_ITEMS"\n"Name" "Old copy"\n' }),
+    )
+    await writeFile(path.join(saved, "my-own", "info.txt"), '"ID" "MY_OWN"\n"Name" "My Own"\n')
+
+    const scan = await backend.invoke("packages:import-scan", saved)
+    assert.equal(scan.ok, true, scan.error)
+    assert.deepEqual(
+        scan.items.map((item) => [item.name, item.action, item.package]),
+        [
+            ["Old copy", "beepm", "@importer/importer-items"],
+            ["My Own", "local", null],
+        ],
+    )
+    const done = await backend.invoke("packages:import-apply", scan.importId)
+    assert.equal(done.ok, true, done.error)
+    assert.deepEqual(done.installed, ["@importer/importer-items@1.0.0"])
+    assert.deepEqual(done.imported, ["My Own"])
+
+    const { packages, local } = await backend.invoke("packages:installed")
+    assert.ok(packages["@importer/importer-items"])
+    assert.equal(local.MY_OWN.name, "My Own")
+    await access(path.join(env.BEEPM_HOME, "packages", "my_own.local.bee_pack"))
+
+    assert.equal((await backend.invoke("packages:remove-local", "MY_OWN")).ok, true)
+    await assert.rejects(access(path.join(env.BEEPM_HOME, "packages", "my_own.local.bee_pack")))
+    assert.deepEqual((await backend.invoke("packages:installed")).local, {})
+})
+
+test("settings: running in the background, and updates not to ask about again", async () => {
+    const applied = []
+    const { backend } = await startBackend({ onSettingsChanged: (s) => applied.push(s.background) })
+    // Off unless it's the installed app (main.js passes backgroundDefault)
+    assert.equal((await backend.invoke("app:settings")).settings.background, false)
+
+    const on = await backend.invoke("app:update-settings", {
+        background: true,
+        ignoredUpdates: ["@a/b"],
+    })
+    assert.equal(on.settings.background, true)
+    assert.deepEqual(applied, [true])
+    const file = path.join(env.BEEPM_HOME, "config", "app-settings.json")
+    assert.deepEqual(JSON.parse(await readFile(file, "utf8")).ignoredUpdates, ["@a/b"])
+
+    // A restarted app reads them back
+    const again = await startBackend()
+    assert.equal((await again.backend.invoke("app:settings")).settings.background, true)
+    await again.backend.invoke("app:update-settings", { background: false, ignoredUpdates: [] })
+    again.backend.watcher.stop()
+    backend.watcher.stop()
+})

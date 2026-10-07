@@ -304,10 +304,11 @@ export async function stripPack(sourcePath, destinationPath, removeNames) {
 }
 
 /**
- * Zips a package folder into a .bee_pack. Files of disallowed types and hidden files or
- * folders (like .git) are left out. Returns { added, skipped } as relative paths.
+ * Zips a package folder into a .bee_pack. Files of disallowed types (unless allFiles: for
+ * packages that stay on this PC) and hidden files or folders (like .git) are left out. Returns
+ * { added, skipped } as relative paths.
  */
-export async function packFolder(folder, destinationPath) {
+export async function packFolder(folder, destinationPath, { allFiles = false } = {}) {
     const added = []
     const skipped = []
     const out = new yazl.ZipFile()
@@ -322,7 +323,7 @@ export async function packFolder(folder, destinationPath) {
                 skipped.push(relative + (entry.isDirectory() ? "/" : ""))
             } else if (entry.isDirectory()) {
                 await walk(path.join(dir, entry.name), relative + "/")
-            } else if (entry.isFile() && isAllowedFile(entry.name)) {
+            } else if (entry.isFile() && (allFiles || isAllowedFile(entry.name))) {
                 const full = path.join(dir, entry.name)
                 const info = await stat(full)
                 out.addFile(full, relative, { mtime: info.mtime })

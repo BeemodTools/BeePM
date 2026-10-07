@@ -1,7 +1,18 @@
 import { watch } from "node:fs"
 import { mkdir } from "node:fs/promises"
 import path from "node:path"
-import { createClientContext, RegistryError } from "@beepm/core/client"
+import {
+    applyPlan,
+    bee2Status,
+    closeBee2,
+    createClientContext,
+    findBee2Program,
+    isBee2Running,
+    outdated,
+    planInstall,
+    RegistryError,
+} from "@beepm/core/client"
+import semver from "semver"
 import { appHandlers } from "./handlers/app.js"
 import { authHandlers } from "./handlers/auth.js"
 import { bee2Handlers } from "./handlers/bee2.js"
@@ -9,8 +20,10 @@ import { manageHandlers } from "./handlers/manage.js"
 import { adoptOldInstalls, packageHandlers } from "./handlers/packages.js"
 import { publishHandlers } from "./handlers/publish.js"
 import { registryHandlers } from "./handlers/registry.js"
+import { createSettings } from "./settings.js"
 import { createAppTokenStore } from "./tokenStore.js"
-import { createLock, isExpected, toFailure } from "./util.js"
+import { createUpdateWatcher } from "./updateWatcher.js"
+import { createLock, isExpected, listOf, toFailure } from "./util.js"
 
 /** Stands in for the log when none is given (tests): only bugs are printed. */
 const quietLog = {
@@ -29,6 +42,8 @@ const quietLog = {
  *   openExternal(url), openPath(dir), showOpenDialog(options)
  *   send(channel, payload)                         events for the window
  *   log                                            the log file (logger.js)
+ *   askUpdate({ name, from, to }), openProgram(file), backgroundDefault,
+ *   onSettingsChanged(settings)                    running in the background (updateWatcher.js)
  *
  * invoke(channel, ...args) never throws: it resolves to { ok: true, ...data } or
  * { ok: false, error, code?, problems?, ... }. What changes something (installs, publishing,
@@ -78,6 +93,16 @@ export async function createBackend(deps = {}) {
                 deps.showOpenDialog ?? (async () => ({ canceled: true, filePaths: [] })),
         },
         lock: createLock(),
+        settings: createSettings(path.join(ctx.paths.configDir, "app-settings.json")),
+        /** The settings the window sees: background filled in with its default. */
+        async appSettings() {
+            const settings = await this.settings.load()
+            return {
+                ...settings,
+                background: settings.background ?? Boolean(deps.backgroundDefault),
+            }
+        },
+        onSettingsChanged: deps.onSettingsChanged ?? (() => {}),
         log,
         step,
         disposers: [],
@@ -120,6 +145,40 @@ export async function createBackend(deps = {}) {
         ...publishHandlers(shared),
         ...manageHandlers(shared),
     }
+
+    // In the background: offers updates when BEE2 opens (see updateWatcher.js)
+    const watcher = createUpdateWatcher({
+        log,
+        isBee2Running,
+        findBee2: findBee2Program,
+        closeBee2,
+        openBee2: deps.openProgram ?? (() => {}),
+        ask: deps.askUpdate ?? (async () => "later"),
+        // Updates that would reach BEE2 (it's hooked), except the ones not to ask about again
+        async findUpdates() {
+            if (!(await bee2Status(ctx.paths, ctx.bee2)).hooked) return []
+            const { ignoredUpdates } = await shared.settings.load()
+            return (await outdated(ctx))
+                .filter((row) => row.wanted && semver.gt(row.wanted, row.current))
+                .filter((row) => !ignoredUpdates.includes(row.name))
+                .map((row) => ({ name: row.name, from: row.current, to: row.wanted }))
+        },
+        async ignore(name) {
+            const { ignoredUpdates } = await shared.settings.load()
+            await shared.settings.update({
+                ignoredUpdates: [...new Set([...ignoredUpdates, name])],
+            })
+        },
+        update: (names) =>
+            shared.lock(() =>
+                step(`Updating ${listOf(names, "packages")} for BEE2`, async () => {
+                    const plan = await planInstall(ctx, names, { update: true })
+                    for (const s of plan.steps) log.info(`${s.name} ${s.from} -> ${s.to}`)
+                    await applyPlan(ctx, plan)
+                    send("packages:changed", {})
+                }),
+            ),
+    })
 
     /**
      * Tells the window when installed.json changes, including from outside the app (e.g.
@@ -167,6 +226,8 @@ export async function createBackend(deps = {}) {
         ctx,
         handlers,
         invoke,
+        watcher,
+        appSettings: () => shared.appSettings(),
         get login() {
             return shared.login
         },
@@ -184,8 +245,9 @@ export async function createBackend(deps = {}) {
             // A failed step is in the log already
             return adoptOldInstalls(shared).catch(() => {})
         },
-        /** Removes temporary files (prepared packages). */
+        /** Stops watching BEE2, and removes temporary files (prepared packages). */
         async dispose() {
+            watcher.stop()
             for (const dispose of shared.disposers) await dispose().catch(() => {})
         },
     }

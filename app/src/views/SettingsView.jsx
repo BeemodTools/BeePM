@@ -15,6 +15,7 @@ import {
     Menu,
     MenuItem,
     Skeleton,
+    Switch,
     TextField,
     Tooltip,
     Typography,
@@ -385,6 +386,54 @@ function AccountSection() {
     )
 }
 
+/** Running in the background, and the packages whose updates aren't offered anymore. */
+function BackgroundSetting() {
+    const { notify } = useApp()
+    const [settings, setSettings] = useState(null)
+
+    useEffect(() => {
+        api.app.settings().then((res) => res.ok && setSettings(res.settings))
+    }, [])
+
+    async function change(changes) {
+        const res = await api.app.updateSettings(changes)
+        if (res.ok) setSettings(res.settings)
+        else notify(res.error, "error")
+    }
+
+    if (!settings) return null
+    const ignored = settings.ignoredUpdates
+    return (
+        <>
+            <Divider sx={{ my: 2 }} />
+            <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
+                <Box sx={{ flex: 1 }}>
+                    <Typography sx={{ color: "#fff", fontWeight: 500 }}>
+                        Update packages when BEE2 opens
+                    </Typography>
+                    <Typography variant="body2" sx={{ color: "#888" }}>
+                        BeePM starts with Windows and waits in the tray.
+                    </Typography>
+                </Box>
+                <Switch
+                    checked={settings.background}
+                    onChange={(event) => change({ background: event.target.checked })}
+                />
+            </Box>
+            {ignored.length > 0 && (
+                <Box sx={{ display: "flex", alignItems: "center", gap: 2, mt: 1 }}>
+                    <Typography variant="body2" sx={{ color: "#888", flex: 1 }}>
+                        Not asking about {ignored.join(", ")}
+                    </Typography>
+                    <Button size="small" onClick={() => change({ ignoredUpdates: [] })}>
+                        Ask again
+                    </Button>
+                </Box>
+            )}
+        </>
+    )
+}
+
 function Bee2Section() {
     const app = useApp()
     const { bee2 } = app
@@ -515,6 +564,7 @@ function Bee2Section() {
                     Open packages folder
                 </Button>
             </Box>
+            <BackgroundSetting />
             <Bee2SetupDialog open={setupOpen} onClose={() => setSetupOpen(false)} />
         </>
     )

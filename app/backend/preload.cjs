@@ -28,6 +28,8 @@ contextBridge.exposeInMainWorld("beepm", {
         openExternal: call("app:open-external"),
         openPackagesFolder: call("app:open-packages-folder"),
         openLogsFolder: call("app:open-logs-folder"),
+        settings: call("app:settings"),
+        updateSettings: call("app:update-settings"),
     },
     auth: {
         status: call("auth:status"),
@@ -49,6 +51,10 @@ contextBridge.exposeInMainWorld("beepm", {
         discardPlan: call("packages:discard-plan"),
         uninstall: call("packages:uninstall"),
         outdated: call("packages:outdated"),
+        pickImport: call("packages:pick-import"),
+        importScan: call("packages:import-scan"),
+        importApply: call("packages:import-apply"),
+        removeLocal: call("packages:remove-local"),
     },
     bee2: {
         status: call("bee2:status"),
@@ -82,6 +88,11 @@ contextBridge.exposeInMainWorld("beepm", {
     admin: {
         removePackage: call("admin:remove-package"),
         restorePackage: call("admin:restore-package"),
+    },
+
+    /** The update question's window (src/components/UpdateToast.jsx) answering. */
+    toast: {
+        answer: call("toast:answer"),
     },
 
     /** Console output for the log file (src/lib/logForwarding.js). */

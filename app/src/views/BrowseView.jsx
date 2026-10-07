@@ -1,5 +1,14 @@
 import { useEffect, useState } from "react"
-import { Alert, Box, Button, CircularProgress, Typography } from "@mui/material"
+import {
+    Alert,
+    Box,
+    Button,
+    ButtonBase,
+    CircularProgress,
+    Collapse,
+    Typography,
+} from "@mui/material"
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore"
 import ExploreIcon from "@mui/icons-material/Explore"
 import { api } from "../api.js"
 import EmptyState from "../components/EmptyState.jsx"
@@ -12,6 +21,7 @@ export default function BrowseView({ query, reloadKey, onNavigate }) {
     const { registryVersion, bee2 } = useApp()
     const [results, setResults] = useState({ loading: true, packages: [], total: 0, error: null })
     const [retry, setRetry] = useState(0)
+    const [showRemoved, setShowRemoved] = useState(false)
     const q = query.trim()
 
     useEffect(() => {
@@ -41,7 +51,11 @@ export default function BrowseView({ query, reloadKey, onNavigate }) {
         }
     }, [q, reloadKey, registryVersion, retry])
 
-    const { loading, packages, total, error } = results
+    const { loading, packages, error } = results
+    // Removed packages (only admins get them) go in their own section at the bottom, closed
+    const live = packages.filter((pkg) => !pkg.removed)
+    const removed = packages.filter((pkg) => pkg.removed)
+    const total = results.total - removed.length
 
     return (
         <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
@@ -97,16 +111,51 @@ export default function BrowseView({ query, reloadKey, onNavigate }) {
                         </Typography>
                         {loading && <CircularProgress size={14} />}
                     </Box>
-                    {packages.map((pkg) => (
+                    {live.map((pkg) => (
                         <PackageCard key={pkg.name} pkg={pkg} />
                     ))}
-                    {total > packages.length && (
+                    {total > live.length && (
                         <Typography
                             variant="body2"
                             sx={{ color: "#777", textAlign: "center", py: 2 }}
                         >
-                            Showing the first {packages.length}. Search to narrow it down.
+                            Showing the first {live.length}. Search to narrow it down.
                         </Typography>
+                    )}
+                    {removed.length > 0 && (
+                        <>
+                            <ButtonBase
+                                onClick={() => setShowRemoved((open) => !open)}
+                                aria-expanded={showRemoved}
+                                sx={{
+                                    alignSelf: "flex-start",
+                                    gap: 0.5,
+                                    mt: 2,
+                                    mb: 0.5,
+                                    px: 0.5,
+                                    borderRadius: 1,
+                                    color: "#888",
+                                }}
+                            >
+                                <Typography variant="subtitle2">
+                                    {removed.length} removed
+                                </Typography>
+                                <ExpandMoreIcon
+                                    sx={{
+                                        fontSize: 18,
+                                        transform: showRemoved ? "rotate(180deg)" : "none",
+                                        transition: "transform 0.15s",
+                                    }}
+                                />
+                            </ButtonBase>
+                            <Collapse in={showRemoved} unmountOnExit>
+                                <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
+                                    {removed.map((pkg) => (
+                                        <PackageCard key={pkg.name} pkg={pkg} />
+                                    ))}
+                                </Box>
+                            </Collapse>
+                        </>
                     )}
                 </>
             )}

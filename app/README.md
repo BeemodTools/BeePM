@@ -8,6 +8,7 @@ backend/preload.cjs  window.beepm for the page (sandboxed, so CommonJS)
 backend/backend.js   every IPC handler, built on @beepm/core/client (no Electron imports)
 backend/handlers/    app, auth, registry, packages, bee2, publish, manage
 backend/logger.js    the log file (BeePEE's logger: each change is a step, drawn as a tree)
+backend/updateWatcher.js  in the background: asks about updates when BEE2 opens
 src/                 the React UI
 src/devBridge.js     a fake window.beepm with sample data, used in a normal browser
 ```
@@ -17,7 +18,9 @@ src/devBridge.js     a fake window.beepm with sample data, used in a normal brow
 - `npm run dev`: Vite on port 5167 plus Electron. Closing the app stops both.
 - `npx vite`, then open http://localhost:5167 in a browser: the UI with the dev bridge's sample
   data (nothing is installed or published). Add `?loggedout` or `?admin` to the URL.
-- `npm run lint`, and `npm run format` (Prettier, using the repo's config).
+- `npm run lint`, `npm run format` (Prettier, using the repo's config), and `npm test`.
+- Running in the background is off in development unless it's turned on in Settings; then
+  closing the window keeps BeePM in the tray (quit it there), and `npm run dev` keeps going.
 - Logs are in `%APPDATA%/beepm/logs` (Settings > About > Open logs folder). In development
   they're also printed in the terminal, with debug lines.
 
