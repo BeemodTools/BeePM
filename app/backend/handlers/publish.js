@@ -12,17 +12,13 @@ import {
 import {
     checkWithRegistry,
     downloadFile,
-    getGithubAsset,
-    GithubError,
-    listGithubReleases,
-    listGithubRepos,
     loadConfig,
     preparePublish,
     publishPrepared,
     RegistryError,
     suggestManifest,
 } from "@beepm/core/client"
-import { AppError, fileSize, listOf, optionalText, throttle } from "../util.js"
+import { AppError, fileSize, isLocalPath, listOf, optionalText, throttle } from "../util.js"
 
 function parseManifest(text) {
     if (!text) return null
@@ -101,6 +97,7 @@ export function publishHandlers(shared) {
         const text = optionalText(input)
         if (!text) throw new AppError("Choose a .bee_pack file or a package folder.")
         const target = path.resolve(text)
+        if (!isLocalPath(target)) throw new AppError("Choose a file or folder on this PC.")
         const info = await stat(target).catch(() => null)
         if (!info) throw new AppError(`${target} doesn't exist.`)
         return { target, isFolder: info.isDirectory() }
@@ -199,7 +196,8 @@ export function publishHandlers(shared) {
         /**
          * A .bee_pack attached to a GitHub release, checked the same way as a file: it's
          * downloaded here first. Publishing it then has the registry import the release (and
-         * check it again) rather than uploading this copy.
+         * check it again) rather than uploading this copy. GitHub lookups go through the
+         * registry, which has a GitHub token (see the registry's routes/github.js).
          */
         "publish:prepare-github": async (options = {}) => {
             const owner = optionalText(options?.owner)
@@ -209,13 +207,9 @@ export function publishHandlers(shared) {
             if (!owner || !repo || !tag || !name) {
                 throw new AppError("Pick a repository, a release and its .bee_pack.")
             }
+            requireLogin()
             return step(`Checking ${name} from ${owner}/${repo} ${tag}`, async () => {
-                let asset
-                try {
-                    asset = await getGithubAsset({ fetch: ctx.fetch }, owner, repo, tag, name)
-                } catch (err) {
-                    throw err instanceof GithubError ? new AppError(err.message) : err
-                }
+                const { asset } = await ctx.api.githubAsset(owner, repo, tag, name)
                 if (asset.size > MAX_RELEASE_BYTES) {
                     throw new AppError(`${asset.name} is larger than 512 MB.`)
                 }
@@ -232,6 +226,12 @@ export function publishHandlers(shared) {
                     result = await preparePublish(file, { handle: shared.handle })
                 } catch (err) {
                     await removeWork()
+                    // For a while after a release's file is replaced, GitHub can send the old one
+                    if (err.code === "size_mismatch") {
+                        throw new AppError(
+                            `GitHub sent a different ${asset.name} than release ${tag} lists (it was probably just replaced). Try again in a few minutes.`,
+                        )
+                    }
                     if (!(err instanceof PackError)) throw err
                     logProblems(err.problems)
                     throw new AppError("This release can't be published yet.", {
@@ -305,14 +305,7 @@ export function publishHandlers(shared) {
         /** The linked GitHub account's repositories that can be published from. */
         "publish:github-repos": async () => {
             requireLogin()
-            const { identities } = await ctx.api.me()
-            const github = identities.find((identity) => identity.provider === "github")
-            if (!github) throw new AppError("Link a GitHub account first.", { code: "no_github" })
-            try {
-                return { repos: await listGithubRepos({ fetch: ctx.fetch }, github.username) }
-            } catch (err) {
-                throw err instanceof GithubError ? new AppError(err.message) : err
-            }
+            return { repos: (await ctx.api.githubRepos()).repos }
         },
 
         /** A repository's releases that have a .bee_pack attached. */
@@ -320,11 +313,8 @@ export function publishHandlers(shared) {
             const owner = optionalText(options?.owner)
             const repo = optionalText(options?.repo)
             if (!owner || !repo) throw new AppError("Pick a repository.")
-            try {
-                return { releases: await listGithubReleases({ fetch: ctx.fetch }, owner, repo) }
-            } catch (err) {
-                throw err instanceof GithubError ? new AppError(err.message) : err
-            }
+            requireLogin()
+            return { releases: (await ctx.api.githubReleases(owner, repo)).releases }
         },
 
         // A bee-package.json suggested from info.txt, plus the current one (if any) to start from

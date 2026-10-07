@@ -79,8 +79,9 @@ async function resolveDependencies(db, manifest) {
 /**
  * The registry's rules for publishing `version` of fullName as `user`: an existing package must
  * be theirs, keep its BEE2 ID and get a new version number; a new one goes in their own scope
- * (admins may use any user's) with a BEE2 ID nobody else has. Returns { pkg (null when new),
- * ownerId }. With lock, the package row stays locked until the transaction ends.
+ * (admins may use any user's) with a BEE2 ID no other package has (removed ones don't count).
+ * Returns { pkg (null when new), ownerId }. With lock, the package row stays locked until the
+ * transaction ends.
  */
 async function checkTarget(
     db,
@@ -134,8 +135,9 @@ async function checkTarget(
             }
             ownerId = scopeUser.id
         }
+        // A removed package's ID is free again (see migration 004)
         const { rows: taken } = await db.query(
-            "SELECT scope, name FROM packages WHERE upper(bee_id) = $1",
+            "SELECT scope, name FROM packages WHERE upper(bee_id) = $1 AND removed_at IS NULL",
             [beeId],
         )
         if (taken.length) {

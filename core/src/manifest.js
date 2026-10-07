@@ -10,6 +10,9 @@ import {
 } from "./names.js"
 
 export const MANIFEST_FILE = "bee-package.json"
+// Real ones are far smaller; checking ranges takes time that grows with their length
+const MAX_DEPENDENCIES = 100
+const MAX_RANGE_LENGTH = 200
 
 /** Thrown when bee-package.json has problems; `problems` lists every one of them. */
 export class ManifestError extends Error {
@@ -103,6 +106,8 @@ export function validateManifest(raw, { defaultScope = null } = {}) {
     if (deps !== undefined && deps !== null) {
         if (typeof deps !== "object" || Array.isArray(deps)) {
             problems.push('"dependencies" must be an object like {"@scope/name": "^1.0.0"}')
+        } else if (Object.keys(deps).length > MAX_DEPENDENCIES) {
+            problems.push(`"dependencies" lists more than ${MAX_DEPENDENCIES} packages`)
         } else {
             for (const [key, value] of Object.entries(deps)) {
                 const parsed = parseName(key)
@@ -111,7 +116,11 @@ export function validateManifest(raw, { defaultScope = null } = {}) {
                     continue
                 }
                 const range = value === "" || value === null || value === undefined ? "*" : value
-                if (typeof range !== "string" || semver.validRange(range) === null) {
+                if (
+                    typeof range !== "string" ||
+                    range.length > MAX_RANGE_LENGTH ||
+                    semver.validRange(range) === null
+                ) {
                     problems.push(`dependency "${key}" has an invalid version range "${value}"`)
                     continue
                 }

@@ -7,10 +7,12 @@ import { api, login, makePack, publish, setup } from "./helpers.js"
 let t
 let alice // owner of @alice/*
 let bob
+let boss // an admin (BOOTSTRAP_ADMINS)
 before(async () => {
     t = await setup({ PUBLISHES_PER_HOUR: "100", PUBLISHES_PER_DAY: "100" })
     alice = (await login(t, t.profile({ username: "alice" }), { handle: "alice" })).token
     bob = (await login(t, t.profile({ username: "bob" }), { handle: "bob" })).token
+    boss = (await login(t, t.profile({ username: "boss" }), { handle: "boss" })).token
 })
 after(() => t.cleanup())
 
@@ -369,7 +371,7 @@ test("finalize checks the upload against what was declared", async () => {
 })
 
 test("admins can remove and restore packages", async () => {
-    const admin = (await login(t, t.profile({ username: "boss" }), { handle: "boss" })).token
+    const admin = boss
     assert.equal((await api(t, alice, "DELETE", "/v1/admin/packages/@bob/bob-deps")).status, 403)
     assert.equal(
         (await api(t, admin, "DELETE", "/v1/admin/packages/@bob/bob-deps", { reason: "Spam" }))
@@ -410,4 +412,35 @@ test("admins can remove and restore packages", async () => {
     assert.equal((await api(t, bob, "GET", "/v1/me")).status, 401) // tokens revoked
     const audit = await api(t, admin, "GET", "/v1/admin/audit")
     assert.ok(audit.body.entries.some((e) => e.action === "admin.user.update"))
+})
+
+test("a removed package frees its BEE2 ID, and admins still find it", async () => {
+    const admin = boss
+    const pack = (name, id = "ALICE_GADGETS") =>
+        makePack(t.dir, { id, manifest: { name, version: "1.0.0" } })
+    assert.equal((await publish(t, alice, await pack("old-gadgets"))).status, 200)
+    const removed = await api(t, admin, "DELETE", "/v1/admin/packages/@alice/old-gadgets", {
+        reason: "Renamed",
+    })
+    assert.equal(removed.status, 200)
+
+    // Only admins find it, marked as removed
+    const names = (res) => res.body.packages.map((p) => p.name)
+    assert.ok(
+        !names(await api(t, alice, "GET", "/v1/packages?q=gadgets")).includes("@alice/old-gadgets"),
+    )
+    const found = (await api(t, admin, "GET", "/v1/packages?q=gadgets")).body.packages
+    assert.equal(found.find((p) => p.name === "@alice/old-gadgets")?.removed?.reason, "Renamed")
+
+    // Its BEE2 ID can be used again; its name stays taken
+    const renamed = await publish(t, alice, await pack("new-gadgets"))
+    assert.equal(renamed.status, 200, JSON.stringify(renamed.body))
+    const sameName = await publish(t, alice, await pack("old-gadgets", "OTHER_GADGETS"))
+    assert.equal(sameName.body.error.code, "package_removed")
+
+    // Restoring it would give two packages the same ID
+    const restored = await api(t, admin, "POST", "/v1/admin/packages/@alice/old-gadgets/restore")
+    assert.equal(restored.status, 409)
+    assert.equal(restored.body.error.code, "bee_id_taken")
+    assert.match(restored.body.error.message, /@alice\/new-gadgets uses the BEE2 ID ALICE_GADGETS/)
 })

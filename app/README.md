@@ -32,14 +32,13 @@ Environment variables (also used by the CLI):
 
 ## Packaging
 
-`npm run build` runs `vite build`, then electron-builder. The page is bundled by Vite, so the
-packaged app only needs the main process' dependencies: `@beepm/core` and what it uses
-(`semver`, `yauzl`, `yazl`).
+`npm run build` runs `vite build`, then electron-builder (settings in `electron-builder.js`),
+and leaves the installer in `release/` (`BeePM Setup <version>.exe`, not code-signed). The page
+is bundled by Vite, so the packaged app only needs the main process' dependencies:
+`@beepm/core` and what it uses (`semver`, `yauzl`, `yazl`, `lzma1`). electron-builder copies
+`@beepm/core` out of the workspace into the package. React and MUI get packed too, since
+they're `dependencies`; moving them to `devDependencies` would make the package smaller.
 
-This hasn't been tried with npm workspaces yet: the dependencies are hoisted to the repo's root
-`node_modules`, and `@beepm/core` is a symlink to `../core`. If the package ends up without
-them, bundle `backend/` into one file (e.g. with esbuild, `@beepm/core` included) and package
-that, or install the app outside the workspace with core packed by `npm pack`.
-
-There are no app icons yet: add `build/icon.ico` and `build/icon.png` (electron-builder looks in
-`build/`).
+Icons, made from BeePM.png: `build/icon.ico` is the app's, the installer's and the
+uninstaller's icon, and `build/installerSidebar.bmp` is the side image of the installer and
+uninstaller. electron-builder finds both by their names.

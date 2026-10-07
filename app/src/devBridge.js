@@ -291,6 +291,7 @@ const summary = (doc) => ({
     deprecated: doc.deprecated,
     updatedAt: doc.updatedAt,
     downloads: doc.downloads,
+    removed: doc.removed,
 })
 
 const isAdmin = () => state.loggedIn && state.user.role === "admin"
@@ -669,7 +670,7 @@ const bridge = {
             await sleep(250)
             const q = String(query).trim().toLowerCase()
             const list = [...state.docs.values()]
-                .filter((doc) => !doc.removed && doc.latest)
+                .filter((doc) => (!doc.removed || isAdmin()) && doc.latest)
                 .filter(
                     (doc) =>
                         !q ||

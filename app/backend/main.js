@@ -5,11 +5,11 @@
 import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from "electron"
 import os from "node:os"
 import path from "node:path"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 import { beepmPaths } from "@beepm/core/client"
 import { createBackend } from "./backend.js"
 import { logger } from "./logger.js"
-import { isWebUrl } from "./util.js"
+import { isLocalPath, isWebUrl } from "./util.js"
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const PROTOCOL = "beepm"
@@ -80,8 +80,8 @@ function handleProtocolUrl(url) {
     focusWindow()
     if (action === "publish") {
         const file = parsed.searchParams.get("file")
-        // Only .bee_pack files: any web page can open a beepm:// link
-        if (file && path.isAbsolute(file) && /\.bee_pack$/i.test(file)) {
+        // Only .bee_pack files on this PC: any web page can open a beepm:// link
+        if (file && isLocalPath(file) && /\.bee_pack$/i.test(file)) {
             send("app:protocol", { action: "publish", file })
         }
     }
@@ -99,6 +99,19 @@ function registerProtocol() {
         }
     } else {
         app.setAsDefaultProtocolClient(PROTOCOL)
+    }
+}
+
+/** Whether a URL is the app's own page (the Vite dev server, or dist/index.html). */
+function isAppPage(url) {
+    try {
+        const target = new URL(url)
+        if (isDev) return target.origin === DEV_URL
+        const page = pathToFileURL(path.join(app.getAppPath(), "dist", "index.html"))
+        const filePath = (u) => decodeURIComponent(u.pathname).toLowerCase()
+        return target.protocol === "file:" && filePath(target) === filePath(page)
+    } catch {
+        return false
     }
 }
 
@@ -143,7 +156,7 @@ function createWindow() {
         return { action: "deny" }
     })
     win.webContents.on("will-navigate", (event, url) => {
-        if (url.startsWith(isDev ? DEV_URL : "file://")) return
+        if (isAppPage(url)) return
         event.preventDefault()
         openExternal(url)
     })

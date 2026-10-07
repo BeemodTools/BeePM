@@ -76,8 +76,9 @@ their login link. Pages send `frame-ancestors 'none'` and every form has a CSRF 
   both ends. `@beemod/<BEE2_ID>` refers to BEE2's built-in packages: never in the
   registry, satisfied by BEE2's own files.
 - Every package has one **BEE2 ID** (`bee_id`) from the top-level `"ID"` in its root
-  `info.txt`. It's uppercase `[A-Z0-9_]` and unique across the registry, because BEE2
-  can't load two packages with the same ID. Every version of a package must have the same ID.
+  `info.txt`. It's uppercase `[A-Z0-9_]` and unique across the registry (removed packages
+  don't count), because BEE2 can't load two packages with the same ID. Every version of a
+  package must have the same ID.
 - **Owners** can publish, yank, deprecate and unpublish, and can add or remove owners
   (but can't remove the last one). Creating a package in a scope requires being that
   scope's user (or an admin).
@@ -87,7 +88,9 @@ their login link. Pages send `frame-ancestors 'none'` and every form has a CSRF 
   - **Deprecate** shows a message; it applies to a version or the whole package.
   - **Unpublish** is allowed only within `UNPUBLISH_HOURS` (72) of publishing, and only
     if no other package's current versions depend on it. The number can never be reused.
-  - Admins can **remove** a whole package, which hides it but keeps its files.
+  - Admins can **remove** a whole package, which hides it from everyone but admins and keeps
+    its files. Its name stays taken, but its BEE2 ID is free for another package; restoring
+    it is refused while another package has the ID.
 
 ### The .bee_pack file (checked by the server on every publish)
 
@@ -145,6 +148,14 @@ recorded (owners see why) and isn't tried again until its .bee_pack is replaced;
 reaching GitHub is retried next time. Without `GITHUB_API_TOKEN` GitHub allows 60 requests an
 hour, so only about a dozen repos are checked each time.
 
+Clients look GitHub up through the registry, which has the token (GitHub allows 60 requests
+an hour per network without one): `GET /v1/github/repos` lists the public repos of the
+user's linked GitHub account and its public organizations, `GET
+/v1/github/repos/:owner/:repo/releases` the releases with a .bee_pack, and `GET
+/v1/github/repos/:owner/:repo/asset?tag=&name=` one .bee_pack `{name, size, url}` (always
+fresh; the client downloads it from `url` itself). Answers are cached, and each account can
+make 120 lookups every 10 minutes.
+
 ### Discord logs
 
 With `DISCORD_LOG_WEBHOOK` set, the registry posts its activity to that Discord channel:
@@ -165,7 +176,7 @@ Public:
 |---|---|
 | `GET /health` | `{ok: true}` |
 | `GET /v1` | `{name, version, providers: ["discord", "github"], limits}` |
-| `GET /v1/packages?q=&limit=&offset=` | `{total, packages: [summary]}` |
+| `GET /v1/packages?q=&limit=&offset=` | `{total, packages: [summary]}` (admins also get removed ones, with `removed`) |
 | `GET /v1/packages/:scope/:name` | packument (below) |
 | `GET /v1/packages/:scope/:name/versions/:version/download` | 302 to a presigned URL |
 | `GET /v1/lookup?name=<name>` or `?beeId=<ID>` | `{packages: ["@scope/name", ...]}` |
@@ -209,6 +220,7 @@ Publishing and management:
 |---|---|
 | `POST /v1/publish/check`, `POST /v1/uploads`, `POST /v1/uploads/:id/finalize` | See Publishing |
 | `POST /v1/imports/github` | See Publishing |
+| `GET /v1/github/repos`, `.../:owner/:repo/releases`, `.../:owner/:repo/asset?tag=&name=` | GitHub lookups for publishing from releases (see Publishing) |
 | `GET`/`DELETE /v1/packages/:scope/:name/github-watch` | Owners: automatic GitHub releases (repo, last release, error), or stop them |
 | `POST` / `DELETE /v1/packages/:scope/:name/versions/:version/yank` | `{reason}` / unyank |
 | `PUT /v1/packages/:scope/:name/deprecation` | `{message, version?}`; `message: null` clears |

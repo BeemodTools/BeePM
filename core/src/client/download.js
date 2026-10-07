@@ -8,6 +8,9 @@ import { once } from "node:events"
 import { finished } from "node:stream/promises"
 import { replaceFile } from "./files.js"
 
+/** A download of another size than expected (error.code "size_mismatch"). */
+const sizeMismatch = (message) => Object.assign(new Error(message), { code: "size_mismatch" })
+
 /**
  * Downloads a URL (following redirects) to a file. The file only appears at
  * `destination` once it's complete and matches expectedSha256/expectedSize.
@@ -33,7 +36,7 @@ export async function downloadFile(
         for await (const chunk of res.body) {
             received += chunk.length
             if (expectedSize && received > expectedSize)
-                throw new Error("The download is larger than expected.")
+                throw sizeMismatch("The download is larger than expected.")
             hash.update(chunk)
             if (!out.write(chunk)) await once(out, "drain")
             onProgress?.(received, total)
@@ -42,7 +45,7 @@ export async function downloadFile(
         await finished(out)
         const sha256 = hash.digest("hex")
         if (expectedSize && received !== expectedSize) {
-            throw new Error(`The download was cut short (${received} of ${expectedSize} bytes).`)
+            throw sizeMismatch(`The download was cut short (${received} of ${expectedSize} bytes).`)
         }
         if (expectedSha256 && sha256 !== expectedSha256) {
             throw new Error(

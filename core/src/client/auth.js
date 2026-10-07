@@ -78,7 +78,11 @@ export function createFileTokenStore(filePath) {
     return {
         load: () => readJson(filePath, null),
         async save(data) {
-            await writeJson(filePath, { ...data, savedAt: new Date().toISOString() })
+            await writeJson(
+                filePath,
+                { ...data, savedAt: new Date().toISOString() },
+                { mode: 0o600 },
+            )
             await chmod(filePath, 0o600).catch(() => {})
         },
         clear: () => rm(filePath, { force: true }),

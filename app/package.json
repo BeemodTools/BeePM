@@ -13,47 +13,6 @@
         "format": "prettier --write .",
         "lint": "eslint . --fix"
     },
-    "build": {
-        "appId": "com.beepm.app",
-        "productName": "BeePM",
-        "files": [
-            "dist/**/*",
-            "backend/**/*",
-            "node_modules/**/*",
-            "package.json"
-        ],
-        "directories": {
-            "buildResources": "build",
-            "output": "release"
-        },
-        "win": {
-            "target": [
-                {
-                    "target": "nsis",
-                    "arch": [
-                        "x64"
-                    ]
-                }
-            ]
-        },
-        "nsis": {
-            "oneClick": false,
-            "allowToChangeInstallationDirectory": true,
-            "perMachine": false,
-            "deleteAppDataOnUninstall": false
-        },
-        "linux": {
-            "target": [
-                {
-                    "target": "AppImage",
-                    "arch": [
-                        "x64"
-                    ]
-                }
-            ],
-            "category": "Development"
-        }
-    },
     "dependencies": {
         "@beepm/core": "*",
         "@emotion/react": "^11.14.0",

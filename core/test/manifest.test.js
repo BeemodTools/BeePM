@@ -52,6 +52,30 @@ test("readInfoTxt falls back to the old regex for malformed files and rejects ba
     assert.throws(() => readInfoTxt('"ID" "has spaces"'), /may only contain/)
 })
 
+// Checking these takes time that grows with the square of their length: one huge value in a
+// publish request could stall the registry, so they're refused (or read in one pass)
+test("huge version ranges, dependency lists and broken info.txt files don't take long", () => {
+    const started = Date.now()
+    assert.throws(() => normalizeCompat(`>=2.4.40${" ".repeat(1_000_000)}x`), /longer than 200/)
+    assert.throws(() => normalizeCompat(Array(51).fill("2.4.46")), /more than 50/)
+    const problems = (manifest) => {
+        try {
+            validateManifest({ name: "@a/p", version: "1.0.0", ...manifest })
+            return []
+        } catch (err) {
+            return err.problems
+        }
+    }
+    assert.ok(problems({ compatibleWith: " ,".repeat(500_000) }).some((p) => /longer/.test(p)))
+    const many = Object.fromEntries(Array.from({ length: 101 }, (_, i) => [`@a/dep${i}`, "*"]))
+    assert.ok(problems({ dependencies: many }).some((p) => /more than 100/.test(p)))
+    const long = { "@a/b": `>=1.0.0${" ".repeat(1000)}` }
+    assert.ok(problems({ dependencies: long }).some((p) => /invalid version range/.test(p)))
+    // A malformed info.txt (a stray "}") that's mostly blank lines: the fallback still reads it
+    assert.equal(readInfoTxt(`${"\n".repeat(1_000_000)}"ID" "SLOW"\n}`).id, "SLOW")
+    assert.ok(Date.now() - started < 2000, `took ${Date.now() - started} ms`)
+})
+
 test("validateManifest normalizes names, scope, compat and dependencies", () => {
     const m = validateManifest(
         {

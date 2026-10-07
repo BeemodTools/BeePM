@@ -14,13 +14,16 @@ const intParam = (value, fallback, max) => {
 export default async function packageRoutes(app) {
     const { db, storage } = app.deps
 
+    // Admins also find removed packages (to restore them)
     app.get("/v1/packages", async (request) => {
         const { q = "", limit, offset, scope } = request.query || {}
+        const viewer = await currentUser(request).catch(() => null)
         return searchPackages(db, {
             q: String(q).slice(0, 100),
             limit: intParam(limit, 50, 200),
             offset: intParam(offset, 0, 100000),
             scope: scope ? String(scope).replace(/^@/, "").toLowerCase() : null,
+            includeRemoved: viewer?.role === "admin",
         })
     })
 

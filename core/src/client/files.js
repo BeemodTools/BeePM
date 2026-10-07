@@ -11,11 +11,14 @@ export async function readJson(filePath, fallback = null) {
     }
 }
 
-/** Writes JSON through a temp file and a rename, so a crash never leaves half a file. */
-export async function writeJson(filePath, data) {
+/**
+ * Writes JSON through a temp file and a rename, so a crash never leaves half a file. mode
+ * (e.g. 0o600 for tokens) applies from the moment the file exists.
+ */
+export async function writeJson(filePath, data, { mode } = {}) {
     await mkdir(path.dirname(filePath), { recursive: true })
     const temp = `${filePath}.${process.pid}.${Date.now()}.tmp`
-    await writeFile(temp, JSON.stringify(data, null, 2) + "\n")
+    await writeFile(temp, JSON.stringify(data, null, 2) + "\n", mode ? { mode } : undefined)
     try {
         await rename(temp, filePath)
     } catch (err) {

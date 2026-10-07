@@ -26,8 +26,13 @@ export function createGithubApi(fetchImpl, token = null) {
             return res.status
         },
 
-        /** Downloads a URL (following redirects) to a file, refusing anything over maxBytes. */
-        async download(url, destination, maxBytes) {
+        /**
+         * Downloads a URL (following redirects) to a file, refusing anything over maxBytes.
+         * With expectedSize (the size GitHub lists for a release file), a file of another size
+         * is refused with code "size_mismatch": for a while after a release's file is replaced,
+         * GitHub can still send the old one.
+         */
+        async download(url, destination, maxBytes, expectedSize = null) {
             const res = await fetchImpl(url, {
                 headers: { "User-Agent": "BeePM-Registry", Accept: "application/octet-stream" },
                 redirect: "follow",
@@ -43,6 +48,12 @@ export function createGithubApi(fetchImpl, token = null) {
                 },
             })
             await pipeline(Readable.fromWeb(res.body), limit, createWriteStream(destination))
+            if (expectedSize != null && received !== expectedSize) {
+                throw Object.assign(
+                    new Error(`GitHub sent ${received} bytes instead of ${expectedSize}.`),
+                    { code: "size_mismatch" },
+                )
+            }
             return received
         },
     }

@@ -1,7 +1,7 @@
 import { formatName } from "@beepm/core"
 import { requireUser } from "../auth/guard.js"
 import { audit } from "../lib/audit.js"
-import { badRequest, notFound } from "../lib/errors.js"
+import { badRequest, conflict, notFound } from "../lib/errors.js"
 import { importLegacy } from "../services/legacy.js"
 import { requirePackage } from "../services/packages.js"
 import { findUserByHandle, handleProblem, publicUser } from "../services/users.js"
@@ -29,16 +29,31 @@ export default async function adminRoutes(app) {
         return { ok: true }
     })
 
+    // Refused while another package uses its BEE2 ID (removing a package frees the ID)
     app.post("/v1/admin/packages/:scope/:name/restore", async (request) => {
         const user = await admin(request)
         const pkg = await requirePackage(db, request.params.scope, request.params.name, {
             includeRemoved: true,
         })
-        await db.query(
-            "UPDATE packages SET removed_at = NULL, removed_reason = NULL WHERE id = $1",
-            [pkg.id],
-        )
-        await audit(db, user.id, "admin.package.restore", formatName(pkg.scope, pkg.name))
+        const fullName = formatName(pkg.scope, pkg.name)
+        try {
+            await db.query(
+                "UPDATE packages SET removed_at = NULL, removed_reason = NULL WHERE id = $1",
+                [pkg.id],
+            )
+        } catch (err) {
+            if (err.code !== "23505") throw err
+            const { rows } = await db.query(
+                "SELECT scope, name FROM packages WHERE upper(bee_id) = upper($1) AND removed_at IS NULL",
+                [pkg.bee_id],
+            )
+            const holder = rows[0] ? formatName(rows[0].scope, rows[0].name) : "Another package"
+            throw conflict(
+                `${holder} uses the BEE2 ID ${pkg.bee_id} now, so ${fullName} can't be restored.`,
+                "bee_id_taken",
+            )
+        }
+        await audit(db, user.id, "admin.package.restore", fullName)
         return { ok: true }
     })
 

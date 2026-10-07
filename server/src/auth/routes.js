@@ -33,6 +33,10 @@ class PageError extends Error {
 
 const cookieName = (sessionId) => `bpm_auth_${sessionId}`
 
+// Railway's edge sets X-Real-IP to the client's address. request.ip comes from X-Forwarded-For,
+// whose first entry the client can make up (trustProxy believes it).
+const clientIp = (request) => request.headers["x-real-ip"] || request.ip
+
 export default async function authRoutes(app) {
     const { db, config, providers, log } = app.deps
     const startLimit = createRateLimiter({ limit: 30, windowMs: 10 * 60 * 1000 })
@@ -40,7 +44,7 @@ export default async function authRoutes(app) {
     // ---------- API used by the app and CLI ----------
 
     app.post("/v1/auth/sessions", async (request) => {
-        if (!startLimit(request.ip))
+        if (!startLimit(clientIp(request)))
             throw tooMany("Too many login attempts. Try again in a few minutes.")
         const { clientName, client } = request.body || {}
         return createAuthSession(db, config, { kind: "login", clientName, clientKind: client })

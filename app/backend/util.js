@@ -1,3 +1,4 @@
+import path from "node:path"
 import { ManifestError, PackError } from "@beepm/core"
 import { Bee2Error, InstallError, LoginError, RegistryError } from "@beepm/core/client"
 
@@ -111,6 +112,17 @@ export function fileSize(bytes) {
 /** Up to three names, or how many there are: "@a/b, @c/d" or "5 packages". */
 export const listOf = (names, noun) =>
     names.length <= 3 ? names.join(", ") : `${names.length} ${noun}`
+
+/**
+ * Whether a path is on this PC. On Windows that's a drive-letter path: opening a network path
+ * (\\host\share\x, also written //host/share/x) makes Windows connect to that host and
+ * hand it the user's login, so a beepm:// link from a web page must never get to open one.
+ */
+export function isLocalPath(value) {
+    const text = String(value ?? "")
+    if (process.platform === "win32") return /^[A-Za-z]:[\\/]/.test(text)
+    return path.isAbsolute(text)
+}
 
 /** A trimmed string, or undefined if it's empty or not a string. */
 export const optionalText = (value) =>

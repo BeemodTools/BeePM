@@ -7,6 +7,7 @@ import yauzl from "yauzl"
 import { readInfoTxt } from "../infotxt.js"
 import { readPack } from "../pack.js"
 import { downloadFile } from "./download.js"
+import { getGithubJson } from "./github.js"
 
 /** A problem with the user's BEE2 setup, with a message meant for them. */
 export class Bee2Error extends Error {}
@@ -182,16 +183,9 @@ export async function unhookBee2(paths, bee2, config, { close = closeBee2 } = {}
 
 const GITHUB = "https://api.github.com/repos/BEEmod"
 
-async function githubJson(fetch, url) {
-    const res = await fetch(url, {
-        headers: { Accept: "application/vnd.github+json", "User-Agent": "BeePM" },
-    })
-    if (res.status === 403 || res.status === 429) {
-        throw new Bee2Error("GitHub's rate limit was hit. Wait a few minutes and try again.")
-    }
-    if (!res.ok) throw new Bee2Error(`GitHub returned HTTP ${res.status}.`)
-    return res.json()
-}
+// BEE2's releases rarely change: asked for at most every half hour (see getGithubJson)
+const githubJson = (fetch, url) =>
+    getGithubJson(fetch, url, { maxAge: 30 * 60 * 1000, ErrorType: Bee2Error })
 
 /** Recent BEE2 releases: [{ version: "2.4.46.1", name: "Version 4.46.1", publishedAt }]. */
 export async function listBee2Releases({ fetch = globalThis.fetch } = {}) {
@@ -221,12 +215,26 @@ export async function findItemsRelease({ fetch = globalThis.fetch } = {}, bee2Ve
     return matching[0].release
 }
 
-/** Extracts a zip into a folder. Returns the top-level names it created. */
+// No real BEE2-items zip comes close to these
+const MAX_ZIP_ENTRIES = 100000
+const MAX_EXTRACTED_BYTES = 8 * 1024 ** 3
+
+/**
+ * Extracts a zip into a folder. Returns the top-level names it created. yauzl refuses entry
+ * names that leave the folder, and checks each entry's size against what the zip says.
+ */
 async function extractZip(zipPath, destination, onEntry) {
     const zipfile = await yauzl.openPromise(zipPath, { lazyEntries: true, autoClose: false })
     const top = new Set()
+    let entries = 0
+    let bytes = 0
     try {
         for await (const entry of zipfile.eachEntry()) {
+            entries++
+            bytes += entry.uncompressedSize
+            if (entries > MAX_ZIP_ENTRIES || bytes > MAX_EXTRACTED_BYTES) {
+                throw new Bee2Error(`${path.basename(zipPath)} is too large to be BEE2's packages.`)
+            }
             const target = path.join(destination, entry.fileName)
             top.add(entry.fileName.split("/")[0])
             if (entry.fileName.endsWith("/")) {
@@ -311,7 +319,7 @@ export async function installBasePackages(
 
     const files = new Set()
     for (const asset of assets) {
-        const zipPath = path.join(paths.cache, asset.name)
+        const zipPath = path.join(paths.cache, path.basename(asset.name))
         await downloadFile(asset.browser_download_url, zipPath, {
             fetch,
             expectedSize: asset.size,

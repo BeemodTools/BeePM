@@ -231,7 +231,15 @@ export default async function publishRoutes(app) {
         try {
             const result = await withTemp(async (tmp) => {
                 const file = await tmp.file(".bee_pack")
-                await gh.download(chosen.browser_download_url, file, config.maxUploadBytes)
+                await gh
+                    .download(chosen.browser_download_url, file, config.maxUploadBytes, chosen.size)
+                    .catch((err) => {
+                        if (err.code !== "size_mismatch") throw err
+                        throw conflict(
+                            `GitHub sent a different ${chosen.name} than release ${release.tag_name} lists (it was probably just replaced). Try again in a few minutes.`,
+                            "github_mismatch",
+                        )
+                    })
                 return publishFile(
                     { ...app.deps, tmp },
                     {

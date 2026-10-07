@@ -11,7 +11,9 @@ export default function PackageCard({ pkg }) {
         useApp()
     const entry = installed[pkg.name]
     const compatible = isCompatible(pkg.compatibleWith, bee2Version)
-    const update = updateFor(pkg.name, pkg)
+    // Removed packages are only listed for admins, who can open them to restore them
+    const removed = Boolean(pkg.removed)
+    const update = removed ? null : updateFor(pkg.name, pkg)
     const working = Boolean(busy[pkg.name])
     const stop = (action) => (event) => {
         event.stopPropagation()
@@ -63,6 +65,17 @@ export default function PackageCard({ pkg }) {
                                 label="Incompatible"
                                 size="small"
                                 sx={{ height: 20, fontSize: 11, color: "#f9a825" }}
+                            />
+                        </Tooltip>
+                    )}
+                    {removed && (
+                        <Tooltip title={pkg.removed.reason ?? ""}>
+                            <Chip
+                                label="Removed"
+                                size="small"
+                                color="error"
+                                variant="outlined"
+                                sx={{ height: 20, fontSize: 11 }}
                             />
                         </Tooltip>
                     )}
@@ -139,7 +152,7 @@ export default function PackageCard({ pkg }) {
                             {working ? <CircularProgress size={18} color="inherit" /> : "Uninstall"}
                         </Button>
                     </>
-                ) : (
+                ) : removed ? null : (
                     <Button
                         size="small"
                         variant={compatible ? "contained" : "outlined"}

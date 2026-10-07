@@ -461,11 +461,13 @@ export async function adoptLegacyInstalls(ctx) {
         } catch {
             names = []
         }
-        if (names.length !== 1 || installed.packages[names[0]]) {
+        // The registry's answer becomes a file name: only a real package name will do
+        const parsed = names.length === 1 ? parseName(names[0]) : null
+        const name = parsed && formatName(parsed.scope, parsed.name)
+        if (!name || installed.packages[name]) {
             unknown.push(beeId)
             continue
         }
-        const name = names[0]
         const file = packageFileName(name)
         const document = await api.packument(name).catch(() => null)
         await replaceFile(oldFile, path.join(paths.packages, file))

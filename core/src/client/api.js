@@ -75,6 +75,8 @@ export function createApi({
 
     const pkg = (name) => `/v1/packages/${encodeName(name)}`
     const ver = (name, version) => `${pkg(name)}/versions/${encodeURIComponent(version)}`
+    const githubRepo = (owner, repo) =>
+        `/v1/github/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`
 
     return {
         registry: base,
@@ -130,6 +132,14 @@ export function createApi({
                 watch,
             }),
         githubWatch: (name) => request("GET", `${pkg(name)}/github-watch`),
+        // GitHub lookups for publishing from releases, made by the registry (see routes/github.js)
+        githubRepos: () => request("GET", "/v1/github/repos"),
+        githubReleases: (owner, repo) => request("GET", `${githubRepo(owner, repo)}/releases`),
+        githubAsset: (owner, repo, tag, name) =>
+            request(
+                "GET",
+                `${githubRepo(owner, repo)}/asset?tag=${encodeURIComponent(tag)}&name=${encodeURIComponent(name)}`,
+            ),
         stopGithubWatch: (name) => request("DELETE", `${pkg(name)}/github-watch`),
 
         yank: (name, version, reason) => request("POST", `${ver(name, version)}/yank`, { reason }),

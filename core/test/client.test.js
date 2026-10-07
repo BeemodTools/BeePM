@@ -1,17 +1,20 @@
 import assert from "node:assert/strict"
-import { mkdir, readFile, writeFile } from "node:fs/promises"
+import { access, mkdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { after, before, test } from "node:test"
 import {
+    adoptLegacyInstalls,
     bee2Paths,
     bee2Status,
     beepmPaths,
+    getGithubJson,
     getIniValue,
     hookBee2,
     installBasePackages,
     InstallError,
     listGithubReleases,
     listGithubRepos,
+    packageFileName,
     suggestManifest,
     planInstall,
     removeIniKey,
@@ -390,6 +393,71 @@ test("GitHub: repos the account can publish from, and releases with a .bee_pack"
         },
     ])
     await assert.rejects(listGithubReleases({ fetch }, "team", "nope"), /doesn't know/)
+})
+
+test("GitHub answers are reused for a while, and stand in when the hourly limit is used up", async () => {
+    let calls = 0
+    let reply = () => new Response(JSON.stringify([{ tag_name: "v1", assets: [] }]))
+    const fetch = async () => {
+        calls++
+        return reply()
+    }
+    const url = "https://api.github.com/repos/team/items/releases?per_page=30"
+    await listGithubReleases({ fetch }, "team", "items")
+    await listGithubReleases({ fetch }, "team", "items")
+    assert.equal(calls, 1) // the second came from the cache
+
+    // Used up: the last answer stands in, and with none the error says when to try again
+    const reset = Math.floor(Date.now() / 1000) + 17 * 60
+    reply = () =>
+        new Response("{}", {
+            status: 403,
+            headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(reset) },
+        })
+    assert.deepEqual(await getGithubJson(fetch, url), [{ tag_name: "v1", assets: [] }])
+    await assert.rejects(
+        getGithubJson(fetch, "https://api.github.com/repos/team/other/releases"),
+        /hourly limit for this network is used up\. Try again in 17 minutes\./,
+    )
+
+    // Other refusals aren't the limit
+    reply = () => new Response("{}", { status: 403 })
+    await assert.rejects(
+        getGithubJson(fetch, "https://api.github.com/repos/team/private"),
+        /GitHub returned HTTP 403\./,
+    )
+})
+
+test("taking over old installs only accepts real package names from the registry", async () => {
+    const paths = beepmPaths({ BEEPM_HOME: path.join(tmp.dir, "adopt", "home") })
+    await mkdir(paths.configDir, { recursive: true })
+    await mkdir(paths.packages, { recursive: true })
+    await writeFile(path.join(paths.packages, "areng_GOOD_ITEMS.bee_pack"), "good")
+    await writeFile(path.join(paths.packages, "evil_EVIL_ITEMS.bee_pack"), "evil")
+    await writeFile(
+        paths.legacyInstalled,
+        JSON.stringify({
+            packages: {
+                GOOD_ITEMS: { author: "areng", version: "1.0.0" },
+                EVIL_ITEMS: { author: "evil", version: "1.0.0" },
+            },
+        }),
+    )
+    // A hostile registry answers with a name that would climb out of the packages folder
+    const api = {
+        lookup: async ({ beeId }) => ({
+            packages: [beeId === "GOOD_ITEMS" ? "@areng/good-items" : "x/../../../PWNED"],
+        }),
+        packument: async () => {
+            throw new Error("not in this test")
+        },
+    }
+    const { adopted, unknown } = await adoptLegacyInstalls({ api, paths })
+    assert.deepEqual(adopted, ["@areng/good-items"])
+    assert.deepEqual(unknown, ["EVIL_ITEMS"])
+    await access(path.join(paths.packages, "areng@good-items.bee_pack"))
+    await access(path.join(paths.packages, "evil_EVIL_ITEMS.bee_pack")) // left where it was
+    assert.throws(() => packageFileName("x/../../PWNED"), /isn't a package name/)
 })
 
 test("suggestManifest continues a published package: its name, the next version", async () => {

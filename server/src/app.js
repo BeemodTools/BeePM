@@ -7,6 +7,7 @@ import authRoutes from "./auth/routes.js"
 import { onAudit } from "./lib/audit.js"
 import { ApiError } from "./lib/errors.js"
 import adminRoutes from "./routes/admin.js"
+import githubRoutes from "./routes/github.js"
 import manageRoutes from "./routes/manage.js"
 import meRoutes from "./routes/me.js"
 import packageRoutes from "./routes/packages.js"
@@ -122,6 +123,7 @@ export async function buildApp(deps) {
     await app.register(meRoutes)
     await app.register(packageRoutes)
     await app.register(publishRoutes)
+    await app.register(githubRoutes)
     await app.register(manageRoutes)
     await app.register(adminRoutes)
     if (deps.storage.routes) await app.register(deps.storage.routes)

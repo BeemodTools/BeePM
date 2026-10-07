@@ -42,5 +42,8 @@ export function bee2Paths(env = process.env) {
 
 /** The file name an installed package gets: @areng14/arengitems -> areng14@arengitems.bee_pack */
 export function packageFileName(fullName) {
-    return `${fullName.replace(/^@/, "").replace("/", "@")}.bee_pack`
+    const file = `${fullName.replace(/^@/, "").replace("/", "@")}.bee_pack`
+    // Package names have one slash; anything else could reach outside the packages folder
+    if (/[\\/]/.test(file)) throw new Error(`"${fullName}" isn't a package name.`)
+    return file
 }

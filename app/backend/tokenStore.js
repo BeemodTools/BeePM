@@ -37,13 +37,17 @@ export function createAppTokenStore(filePath, safeStorage) {
 
         async save({ registry, token, user }) {
             const encrypted = canEncrypt()
-            await writeJson(filePath, {
-                registry,
-                user,
-                token: encrypted ? safeStorage.encryptString(token).toString("base64") : token,
-                encrypted,
-                savedAt: new Date().toISOString(),
-            })
+            await writeJson(
+                filePath,
+                {
+                    registry,
+                    user,
+                    token: encrypted ? safeStorage.encryptString(token).toString("base64") : token,
+                    encrypted,
+                    savedAt: new Date().toISOString(),
+                },
+                { mode: 0o600 },
+            )
             await chmod(filePath, 0o600).catch(() => {})
         },
 

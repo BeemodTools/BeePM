@@ -17,11 +17,14 @@ import { migrate } from "@beepm/server/src/db/migrate.js"
 import { createLocalStorage } from "@beepm/server/src/storage/local.js"
 import { createBackend } from "../backend/backend.js"
 import { Logger } from "../backend/logger.js"
+import { isLocalPath } from "../backend/util.js"
 
 // Hooking closes BEE2; a test must never close the real one
 process.env.BEEPM_NO_CLOSE_BEE2 = "1"
 
 let dir, server, db, registry, env
+// GitHub API answers by URL, for the registry (it looks GitHub up for the app)
+const githubApi = new Map()
 
 async function freePort() {
     const probe = net.createServer()
@@ -46,6 +49,12 @@ before(async () => {
         db,
         storage: createLocalStorage({ dir: config.storage.dir, publicUrl: registry }),
         providers: createProviders({}, fetch, { devLogin: true, publicUrl: registry }),
+        fetch: async (url, init) => {
+            const reply = githubApi.get(String(url))
+            if (reply) return new Response(JSON.stringify(reply))
+            if (String(url).startsWith("https://")) return new Response("{}", { status: 404 })
+            return fetch(url, init)
+        },
         logger: false,
     })
     await server.listen({ port, host: "127.0.0.1" })
@@ -315,28 +324,31 @@ test("a GitHub release's .bee_pack is checked like a file before it's published"
     })
     const bare = await zipBytes({ "info.txt": info, "items/released/editoritems.txt": '"Item" {}' })
 
-    // GitHub, played by a stand-in; everything else (the registry) goes through for real
+    // GitHub, played by stand-ins: the registry looks the release up, the app downloads the file
+    githubApi.set("https://api.github.com/repos/maker/items", { private: false })
+    githubApi.set("https://api.github.com/repos/maker/items/releases/tags/v2", {
+        tag_name: "v2",
+        assets: [
+            {
+                name: "items.bee_pack",
+                size: good.length,
+                browser_download_url: "https://dl.example/good",
+            },
+            {
+                name: "bare.bee_pack",
+                size: bare.length,
+                browser_download_url: "https://dl.example/bare",
+            },
+            // Just replaced: GitHub still sends the old file for a while
+            {
+                name: "replaced.bee_pack",
+                size: good.length - 100,
+                browser_download_url: "https://dl.example/good",
+            },
+        ],
+    })
     const githubFetch = async (url, init) => {
         const href = String(url)
-        if (href === "https://api.github.com/repos/maker/items/releases/tags/v2") {
-            return new Response(
-                JSON.stringify({
-                    tag_name: "v2",
-                    assets: [
-                        {
-                            name: "items.bee_pack",
-                            size: good.length,
-                            browser_download_url: "https://dl.example/good",
-                        },
-                        {
-                            name: "bare.bee_pack",
-                            size: bare.length,
-                            browser_download_url: "https://dl.example/bare",
-                        },
-                    ],
-                }),
-            )
-        }
         if (href === "https://dl.example/good") return new Response(good)
         if (href === "https://dl.example/bare") return new Response(bare)
         if (href.startsWith("https://")) return new Response("{}", { status: 404 })
@@ -377,6 +389,16 @@ test("a GitHub release's .bee_pack is checked like a file before it's published"
     assert.equal(unknown.ok, false)
     assert.match(unknown.error, /no \.bee_pack called nope\.bee_pack/)
 
+    const replaced = await backend.invoke("publish:prepare-github", {
+        ...release,
+        asset: "replaced.bee_pack",
+    })
+    assert.equal(replaced.ok, false)
+    assert.match(
+        replaced.error,
+        /^GitHub sent a different replaced\.bee_pack than release v2 lists/,
+    )
+
     assert.equal((await backend.invoke("publish:discard", checked.id)).ok, true)
 })
 
@@ -416,3 +438,24 @@ test("a package the registry would refuse stops at the check, before review", as
     assert.equal(suggested.manifest.version, "1.0.1")
     assert.deepEqual(suggested.published, { name: "@checker/checked-items", latest: "1.0.0" })
 })
+
+// A beepm:// link from any web page can name a file: a network path would make Windows connect
+// to that host and send it the user's login
+test(
+    "network paths are never opened",
+    { skip: process.platform !== "win32" && "Windows only" },
+    async () => {
+        assert.equal(isLocalPath("C:\\packages\\items.bee_pack"), true)
+        for (const remote of [
+            "\\\\127.0.0.1\\share\\items.bee_pack",
+            "//127.0.0.1/share/items.bee_pack",
+            "\\\\?\\UNC\\127.0.0.1\\share\\items.bee_pack",
+        ]) {
+            assert.equal(isLocalPath(remote), false, remote)
+        }
+        const { backend } = await startBackend()
+        const res = await backend.invoke("publish:prepare", "\\\\127.0.0.1\\share\\items.bee_pack")
+        assert.equal(res.ok, false)
+        assert.equal(res.error, "Choose a file or folder on this PC.")
+    },
+)

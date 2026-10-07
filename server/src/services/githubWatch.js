@@ -108,7 +108,7 @@ async function checkWatch(deps, gh, watch) {
         }
         const result = await withTemp(async (tmp) => {
             const file = await tmp.file(".bee_pack")
-            await gh.download(asset.browser_download_url, file, config.maxUploadBytes)
+            await gh.download(asset.browser_download_url, file, config.maxUploadBytes, asset.size)
             return publishFile(
                 { ...deps, tmp },
                 {

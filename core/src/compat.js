@@ -26,12 +26,23 @@ export function bee2Semver(version) {
  *   ["2.4.45", "2.4.46.0"] -> "2.4.45 || 2.4.46"
  * Throws if the value can't be understood.
  */
+// Real ranges are short; checking a long one takes time that grows with its length squared
+const MAX_COMPAT_LENGTH = 200
+const MAX_COMPAT_VERSIONS = 50
+const MAX_VERSION_LENGTH = 50
+
 export function normalizeCompat(value) {
     if (value === undefined || value === null) return null
 
     if (Array.isArray(value)) {
         if (value.length === 0) return null
+        if (value.length > MAX_COMPAT_VERSIONS) {
+            throw new Error(`compatibleWith lists more than ${MAX_COMPAT_VERSIONS} versions`)
+        }
         const versions = value.map((v) => {
+            if (String(v).length > MAX_VERSION_LENGTH) {
+                throw new Error("A version in compatibleWith is too long")
+            }
             const parsed = bee2Semver(v)
             if (!parsed) throw new Error(`"${v}" in compatibleWith isn't a BEE2 version`)
             return parsed
@@ -41,6 +52,9 @@ export function normalizeCompat(value) {
 
     if (typeof value !== "string") {
         throw new Error("compatibleWith must be a version range or a list of versions")
+    }
+    if (value.length > MAX_COMPAT_LENGTH) {
+        throw new Error(`compatibleWith is longer than ${MAX_COMPAT_LENGTH} characters`)
     }
     let text = value.trim()
     if (text === "" || text === "*") return null

@@ -286,7 +286,11 @@ function DetailsBody({ name, onClose }) {
     const doc = state.doc
     const user = auth.loggedIn ? auth.user : null
     const isAdmin = user?.role === "admin"
-    const canManage = Boolean(doc && user && (isAdmin || doc.owners.includes(user.handle)))
+    // A removed package (only admins see it) can only be restored
+    const removed = Boolean(doc?.removed)
+    const canManage = Boolean(
+        doc && user && !removed && (isAdmin || doc.owners.includes(user.handle)),
+    )
     const entry = installed[name]
     const best = doc ? bestVersion(doc, bee2Version) : null
 
@@ -457,7 +461,7 @@ function DetailsBody({ name, onClose }) {
                     </Box>
                 </Box>
 
-                {doc && !entry && (
+                {doc && !entry && !removed && (
                     <Tooltip title={best ? "" : "No version works with your BEE2 version"}>
                         <span>
                             <Button
@@ -471,7 +475,7 @@ function DetailsBody({ name, onClose }) {
                         </span>
                     </Tooltip>
                 )}
-                {doc && entry && best && isNewer(best, entry.version) && (
+                {doc && entry && !removed && best && isNewer(best, entry.version) && (
                     <Button
                         variant="contained"
                         startIcon={<UpgradeIcon />}
@@ -654,7 +658,7 @@ function DetailsBody({ name, onClose }) {
                 {menu && [
                     <MenuItem
                         key="install"
-                        disabled={working || menu.version.version === entry?.version}
+                        disabled={working || removed || menu.version.version === entry?.version}
                         onClick={pick(installVersion)}
                     >
                         <ListItemText

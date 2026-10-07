@@ -101,6 +101,8 @@ export function packageSummary(pkg, versions) {
         deprecated: pkg.deprecated,
         updatedAt: pkg.updated_at,
         downloads: versions.reduce((sum, v) => sum + Number(v.downloads || 0), 0),
+        // Only admins are shown removed packages
+        removed: pkg.removed_at ? { at: pkg.removed_at, reason: pkg.removed_reason } : undefined,
     }
 }
 
@@ -112,19 +114,24 @@ export async function packument(db, pkg) {
         ...packageSummary(pkg, versions),
         owners: await listOwners(db, pkg.id),
         createdAt: pkg.created_at,
-        removed: pkg.removed_at ? { at: pkg.removed_at, reason: pkg.removed_reason } : undefined,
         versions: Object.fromEntries(versions.map((v) => [v.version, versionInfo(v)])),
     }
 }
 
 const likePattern = (text) => `%${text.replace(/[\\%_]/g, (c) => `\\${c}`)}%`
 
-/** Packages with at least one published version, searched by name, ID, title or description. */
-export async function searchPackages(db, { q = "", limit = 50, offset = 0, scope = null } = {}) {
+/**
+ * Packages with at least one published version, searched by name, ID, title or description.
+ * includeRemoved (admins): removed packages too, with `removed` set.
+ */
+export async function searchPackages(
+    db,
+    { q = "", limit = 50, offset = 0, scope = null, includeRemoved = false } = {},
+) {
     const where = [
-        "p.removed_at IS NULL",
         "EXISTS (SELECT 1 FROM versions v WHERE v.package_id = p.id AND v.unpublished_at IS NULL)",
     ]
+    if (!includeRemoved) where.push("p.removed_at IS NULL")
     const params = []
     if (q.trim()) {
         params.push(likePattern(q.trim()))
