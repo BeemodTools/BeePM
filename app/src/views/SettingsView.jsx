@@ -508,6 +508,20 @@ function Bee2Section() {
                     }}
                 />
             </Box>
+            {/* BEE2 no longer loads its own packages folder: until something is imported */}
+            {hooked && !Object.keys(app.local).length && (
+                <Alert
+                    severity="info"
+                    sx={{ mt: 1.5 }}
+                    action={
+                        <Button color="inherit" size="small" onClick={() => app.goTo("import")}>
+                            Import
+                        </Button>
+                    }
+                >
+                    Your own packages aren't gone: import them to load them in BEE2.
+                </Alert>
+            )}
             <Divider sx={{ my: 2 }} />
             <Typography sx={{ color: "#fff", fontWeight: 500 }}>
                 {setup?.version ? setup.name || `BEE2 ${setup.version}` : "BEE2 isn't set up"}

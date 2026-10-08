@@ -477,6 +477,9 @@ test("importing packages from this PC: BeePM's own first, and they replace local
     await makeZip(path.join(dir, "clean.bee_pack"), { "info.txt": infoTxt("BEE2_CLEAN_STYLE") })
     await writeFile(path.join(dir, "broken.bee_pack"), "not a zip")
     await writeFile(path.join(dir, "readme.txt"), "not a package")
+    // In a folder that isn't a package itself (BEE2 looks in those too)
+    await mkdir(path.join(dir, "Signage"))
+    await makeZip(path.join(dir, "Signage", "signs.bee_pack"), { "info.txt": infoTxt("SIGNS") })
 
     // On BeePM: @a/app has the ID APP, and @me/mine (below) has MY_PACK
     const bytes = Buffer.from("the published copy")
@@ -495,7 +498,10 @@ test("importing packages from this PC: BeePM's own first, and they replace local
         bee2: { version: "2.4.46.0", basePackages: ["BEE2_CLEAN_STYLE"] },
     })
 
-    const { items, offline } = await planImport(ctx, await findPackages(dir))
+    const reads = []
+    const lookups = []
+    const found = await findPackages(dir, { onProgress: (p) => reads.push(p) })
+    const { items, offline } = await planImport(ctx, found, { onProgress: (p) => lookups.push(p) })
     assert.equal(offline, false)
     assert.deepEqual(
         Object.fromEntries(items.map((item) => [path.basename(item.path), item.action])),
@@ -505,16 +511,20 @@ test("importing packages from this PC: BeePM's own first, and they replace local
             "folder-pack": "local",
             "mine.bee_pack": "local",
             "published.zip": "beepm",
+            "signs.bee_pack": "local",
         },
     )
     assert.equal(items.find((item) => item.action === "beepm").package, "@a/app")
+    // Every package read, then the registry asked about the ones not skipped
+    assert.deepEqual(reads.at(-1), { done: 6, total: 6 })
+    assert.deepEqual(lookups.at(-1), { done: 4, total: 4 })
 
     // Copied in; a folder is zipped with all its files
     for (const item of items.filter((i) => i.action === "local")) {
         await importLocal(ctx.paths, item)
     }
     let installed = await loadInstalled(ctx.paths)
-    assert.deepEqual(Object.keys(installed.local).sort(), ["FOLDER_PACK", "MY_PACK"])
+    assert.deepEqual(Object.keys(installed.local).sort(), ["FOLDER_PACK", "MY_PACK", "SIGNS"])
     const zipped = await readPack(path.join(ctx.paths.packages, "folder_pack.local.bee_pack"))
     assert.ok(zipped.files.includes("notes.md"))
 
@@ -524,7 +534,7 @@ test("importing packages from this PC: BeePM's own first, and they replace local
     const result = await applyPlan(ctx, plan)
     assert.deepEqual(result.replacedLocal, ["Test package"])
     installed = await loadInstalled(ctx.paths)
-    assert.deepEqual(Object.keys(installed.local), ["FOLDER_PACK"])
+    assert.deepEqual(Object.keys(installed.local).sort(), ["FOLDER_PACK", "SIGNS"])
     await assert.rejects(access(path.join(ctx.paths.packages, "my_pack.local.bee_pack")))
     await access(path.join(ctx.paths.packages, "me@mine.bee_pack"))
 })

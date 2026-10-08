@@ -29,6 +29,7 @@ export default function AppProvider({ children }) {
     const [busy, setBusy] = useState({})
     const [registryVersion, setRegistryVersion] = useState(0)
     const [publishRequest, setPublishRequest] = useState(null)
+    const [viewRequest, setViewRequest] = useState(null) // { view, id }: see goTo
     const loginRef = useRef(null)
     const jobRef = useRef(null)
     const installedRequest = useRef(0)
@@ -54,6 +55,9 @@ export default function AppProvider({ children }) {
 
     const openPackage = useCallback((name) => setDetails(name), [])
     const closeDetails = useCallback(() => setDetails(null), [])
+
+    /** Opens a view ("import", "installed", ...) from anywhere: App.jsx switches to it. */
+    const goTo = useCallback((view) => setViewRequest({ view, id: newId() }), [])
 
     // ---------- loading state ----------
 
@@ -386,6 +390,8 @@ export default function AppProvider({ children }) {
         busy,
         registryVersion,
         publishRequest,
+        viewRequest,
+        goTo,
         notify,
         dismissToast,
         askConfirm,

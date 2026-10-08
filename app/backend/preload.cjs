@@ -12,6 +12,7 @@ const EVENTS = [
     "auth:login-result",
     "bee2:progress",
     "packages:changed",
+    "packages:import-progress",
     "packages:progress",
     "publish:progress",
 ]
@@ -54,6 +55,7 @@ contextBridge.exposeInMainWorld("beepm", {
         pickImport: call("packages:pick-import"),
         importScan: call("packages:import-scan"),
         importApply: call("packages:import-apply"),
+        importSources: call("packages:import-sources"),
         removeLocal: call("packages:remove-local"),
     },
     bee2: {

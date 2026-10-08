@@ -6,18 +6,14 @@ import {
     Card,
     Chip,
     CircularProgress,
-    Menu,
-    MenuItem,
     Tooltip,
     Typography,
 } from "@mui/material"
-import FileUploadIcon from "@mui/icons-material/FileUpload"
 import InventoryIcon from "@mui/icons-material/Inventory"
 import RefreshIcon from "@mui/icons-material/Refresh"
 import UpgradeIcon from "@mui/icons-material/Upgrade"
 import { api } from "../api.js"
 import EmptyState from "../components/EmptyState.jsx"
-import ImportDialog from "../components/ImportDialog.jsx"
 import { formatDate, isCompatible } from "../lib/format.js"
 import { useApp } from "../state/context.js"
 
@@ -172,7 +168,13 @@ function LocalRow({ beeId, entry }) {
                 <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
                     <Typography sx={{ fontWeight: 600, color: "#fff" }}>{name}</Typography>
                     <Tooltip title={entry.from ?? ""}>
-                        <Chip label="Local" size="small" variant="outlined" sx={smallChip} />
+                        <Chip
+                            label="Local"
+                            size="small"
+                            color="info"
+                            variant="outlined"
+                            sx={smallChip}
+                        />
                     </Tooltip>
                 </Box>
                 <Typography variant="body2" sx={{ color: "#888", mt: 0.25 }}>
@@ -194,70 +196,11 @@ function LocalRow({ beeId, entry }) {
 }
 
 /**
- * Imports packages from this PC: a .bee_pack, a package folder or a folder of packages. Shows
- * what will happen first (ImportDialog).
+ * What's installed (by you or as dependencies), with updates, then the packages imported from
+ * this PC (Import), tagged Local.
  */
-function useImport() {
-    const { notify, refreshInstalled } = useApp()
-    const [menu, setMenu] = useState(null)
-    const [scan, setScan] = useState(null) // { importId, items, offline }
-    const [scanning, setScanning] = useState(false)
-    const [working, setWorking] = useState(false)
-
-    async function pick(kind) {
-        setMenu(null)
-        const picked = await api.packages.pickImport(kind)
-        if (!picked.ok) return notify(picked.error, "error")
-        if (picked.canceled) return
-        setScanning(true)
-        const res = await api.packages.importScan(picked.path)
-        setScanning(false)
-        if (res.ok) setScan(res)
-        else notify(res.error, "error")
-    }
-
-    async function run() {
-        setWorking(true)
-        const res = await api.packages.importApply(scan.importId)
-        setWorking(false)
-        setScan(null)
-        await refreshInstalled()
-        if (!res.ok) return notify(res.error, "error")
-        const count = res.imported.length + res.installed.length
-        notify(`Imported ${count}. Restart BEE2 to load ${count === 1 ? "it" : "them"}.`, "success")
-    }
-
-    const button = (
-        <>
-            <Button
-                size="small"
-                startIcon={scanning ? <CircularProgress size={14} /> : <FileUploadIcon />}
-                disabled={scanning}
-                onClick={(event) => setMenu(event.currentTarget)}
-            >
-                Import
-            </Button>
-            <Menu anchorEl={menu} open={Boolean(menu)} onClose={() => setMenu(null)}>
-                <MenuItem onClick={() => pick("file")}>A .bee_pack file</MenuItem>
-                <MenuItem onClick={() => pick("folder")}>A folder</MenuItem>
-            </Menu>
-            {scan && (
-                <ImportDialog
-                    scan={scan}
-                    working={working}
-                    onImport={run}
-                    onClose={() => setScan(null)}
-                />
-            )}
-        </>
-    )
-    return button
-}
-
-/** What's installed (by you or as dependencies), with updates, and packages imported from this PC. */
 export default function InstalledView({ query, onNavigate }) {
     const { installed, local, outdated, bee2, job, install, refreshInstalled, updateFor } = useApp()
-    const importButton = useImport()
     const all = Object.entries(installed).sort(([a], [b]) => a.localeCompare(b))
     const locals = Object.entries(local).sort(([, a], [, b]) =>
         String(a.name ?? "").localeCompare(String(b.name ?? "")),
@@ -300,13 +243,15 @@ export default function InstalledView({ query, onNavigate }) {
                 <EmptyState
                     icon={InventoryIcon}
                     title="No packages installed"
-                    text="Find packages to install in Browse."
+                    text="Find packages to install in Browse, or import your own."
                     action={
                         <Box sx={{ display: "flex", gap: 1, justifyContent: "center" }}>
                             <Button variant="outlined" onClick={() => onNavigate("browse")}>
                                 Browse packages
                             </Button>
-                            {importButton}
+                            <Button variant="outlined" onClick={() => onNavigate("import")}>
+                                Import
+                            </Button>
                         </Box>
                     }
                 />
@@ -322,9 +267,8 @@ export default function InstalledView({ query, onNavigate }) {
                         }}
                     >
                         <Typography variant="subtitle2" sx={{ color: "#888", flex: 1 }}>
-                            {all.length ? `${all.length} installed` : ""}
+                            {all.length + locals.length} installed
                         </Typography>
-                        {importButton}
                         {all.length > 0 && (
                             <>
                                 <Button
@@ -361,20 +305,13 @@ export default function InstalledView({ query, onNavigate }) {
                     {shown.map(([name, entry]) => (
                         <InstalledRow key={name} name={name} entry={entry} />
                     ))}
+                    {shownLocal.map(([beeId, entry]) => (
+                        <LocalRow key={beeId} beeId={beeId} entry={entry} />
+                    ))}
                     {!shown.length && !shownLocal.length && (
                         <Typography sx={{ color: "#888", textAlign: "center", py: 4 }}>
                             No installed package matches "{query.trim()}".
                         </Typography>
-                    )}
-                    {shownLocal.length > 0 && (
-                        <>
-                            <Typography variant="subtitle2" sx={{ color: "#888", mt: 2, mb: 0.5 }}>
-                                {shownLocal.length} local
-                            </Typography>
-                            {shownLocal.map(([beeId, entry]) => (
-                                <LocalRow key={beeId} beeId={beeId} entry={entry} />
-                            ))}
-                        </>
                     )}
                 </>
             )}

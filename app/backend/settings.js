@@ -1,6 +1,6 @@
 import { readJson, writeJson } from "@beepm/core/client"
 
-const DEFAULTS = { background: null, ignoredUpdates: [], trayHintShown: false }
+const DEFAULTS = { background: null, ignoredUpdates: [], trayHintShown: false, bee2Program: null }
 
 /**
  * The desktop app's own settings, in config/app-settings.json:
@@ -8,6 +8,7 @@ const DEFAULTS = { background: null, ignoredUpdates: [], trayHintShown: false }
  *                   window closes, and offer updates when BEE2 opens (null: the default)
  *   ignoredUpdates  packages whose updates aren't offered ("Don't ask again")
  *   trayHintShown   the "BeePM keeps running here" hint was shown once
+ *   bee2Program     BEE2.exe, last seen running (to find BEE2's own packages folder)
  */
 export function createSettings(file) {
     let current = null

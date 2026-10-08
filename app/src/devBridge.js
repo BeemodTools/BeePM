@@ -3,7 +3,8 @@
  * the Vite dev server. It answers every call with sample data and simulates logins, downloads and
  * uploads, so nothing is installed, published or opened for real.
  *
- * URL options: ?loggedout starts logged out, ?admin makes the sample user an admin.
+ * URL options: ?loggedout starts logged out, ?admin makes the sample user an admin, ?unhooked
+ * starts with BEE2 not hooked.
  */
 import { isCompatible } from "@beepm/core/compat"
 import semver from "semver"
@@ -205,7 +206,7 @@ const state = {
         installedAt: days(10),
         fromLegacy: false,
     },
-    hooked: true,
+    hooked: !params.has("unhooked"),
     docs: samplePackages(),
     installed: {
         "@areng14/arengitems": {
@@ -273,6 +274,14 @@ function closeBee2() {
 const listeners = new Map()
 function emit(event, payload) {
     for (const callback of listeners.get(event) ?? []) callback(payload)
+}
+
+/** "packages:import-progress" for a scan's phase: one package after another. */
+async function importSteps(phase, total, delay) {
+    for (let done = 0; done <= total; done++) {
+        emit("packages:import-progress", { phase, done, total })
+        await sleep(delay)
+    }
 }
 
 async function simulate(total, steps, delay, report) {
@@ -718,10 +727,21 @@ const bridge = {
                         ? "C:\\Users\\you\\Documents\\BEE2 packages"
                         : "C:\\Users\\you\\Downloads\\portal-props.bee_pack",
             }),
+        // ?nobee2folder: BeePM hasn't seen BEE2 run, so it doesn't know where BEE2's folder is
+        importSources: async () =>
+            ok({
+                hooked: state.hooked,
+                folders:
+                    state.hooked && !params.has("nobee2folder")
+                        ? ["C:\\Users\\you\\Documents\\BEE2_4.46.0_win\\packages"]
+                        : [],
+            }),
         // A folder of packages: one on BeePM, one installed already, one of BEE2's own, two local
         importScan: async (target) => {
-            await sleep(400)
-            const items = String(target).endsWith(".bee_pack")
+            const single = String(target).endsWith(".bee_pack")
+            await importSteps("read", single ? 1 : 24, 60)
+            await importSteps("check", single ? 1 : 3, 250)
+            const items = single
                 ? [
                       {
                           name: "Portal Props",
@@ -759,7 +779,7 @@ const bridge = {
                       },
                       {
                           name: "Old Signage",
-                          file: "old_signage.zip",
+                          file: "Signage\\old_signage.zip", // in a folder inside the one chosen
                           beeId: "OLD_SIGNAGE",
                           action: "local",
                           replaces: Boolean(state.local.OLD_SIGNAGE),
@@ -774,12 +794,34 @@ const bridge = {
             })
         },
         importApply: async (importId) => {
-            await sleep(700)
             const scan = state.imports.get(importId)
             if (!scan) return fail("That import is out of date. Try again.")
             state.imports.delete(importId)
             const imported = []
             const installed = []
+            const local = scan.items.filter((item) => item.action === "local")
+            const fromBeepm = scan.items.filter((item) => item.action === "beepm")
+            for (const [index, item] of local.entries()) {
+                emit("packages:import-progress", {
+                    phase: "copy",
+                    done: index,
+                    total: local.length,
+                    name: item.name,
+                })
+                await sleep(2500)
+            }
+            for (const [index, item] of fromBeepm.entries()) {
+                await simulate(4_200_000, 10, 150, (received) =>
+                    emit("packages:import-progress", {
+                        phase: "download",
+                        done: index,
+                        total: fromBeepm.length,
+                        name: item.package,
+                        received,
+                        size: 4_200_000,
+                    }),
+                )
+            }
             for (const item of scan.items) {
                 if (item.action === "local") {
                     state.local[item.beeId] = {

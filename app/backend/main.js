@@ -54,7 +54,8 @@ let rendererReady = false
 const queued = []
 let tray = null
 let background = false // running in the background: see applyBackground
-const toastAnswers = new Map() // update question windows (askUpdate): webContents id -> finish
+// Question windows (showToast): webContents id -> { finish(answer), answers }
+const toastAnswers = new Map()
 
 function send(channel, payload) {
     if (mainWindow && !mainWindow.isDestroyed() && rendererReady) {
@@ -137,12 +138,22 @@ async function hintTray() {
     await backend.invoke("app:update-settings", { trayHintShown: true })
 }
 
-/**
- * "Update <package>?" in a small window in the bottom-right corner, on top of BEE2 without
- * taking its focus (src/components/UpdateToast.jsx, answering through "toast:answer").
- * Resolves to "update", "later" or "never"; closing it, or leaving it for a minute, is "later".
- */
+/** "Update <package>?": "update", "later" or "never" (closing it, or leaving it, is "later"). */
 function askUpdate({ name, from, to }) {
+    return showToast({ toast: "update", name, from, to }, ["update", "never"], 60 * 1000)
+}
+
+/** "Close BEE2 to update?": "now", or "later" to update once the user closes it. */
+function askClose() {
+    return showToast({ toast: "close" }, ["now"], 2 * 60 * 1000)
+}
+
+/**
+ * A question in a small window in the bottom-right corner, on top of BEE2 without taking its
+ * focus (src/components/UpdateToast.jsx, answering through "toast:answer"). Resolves to one of
+ * `answers`, or "later" when it's closed or left for `timeoutMs`.
+ */
+function showToast(query, answers, timeoutMs) {
     const width = 400
     const height = 150
     const { workArea } = screen.getPrimaryDisplay()
@@ -169,7 +180,6 @@ function askUpdate({ name, from, to }) {
     })
     toast.webContents.setWindowOpenHandler(() => ({ action: "deny" }))
     toast.webContents.on("will-navigate", (event) => event.preventDefault())
-    const query = { toast: "update", name, from, to }
     const loading = isDev
         ? toast.loadURL(`${DEV_URL}/?${new URLSearchParams(query)}`)
         : toast.loadFile(path.join(app.getAppPath(), "dist", "index.html"), { query })
@@ -178,7 +188,7 @@ function askUpdate({ name, from, to }) {
 
     const id = toast.webContents.id
     return new Promise((resolve) => {
-        const timer = setTimeout(() => finish("later"), 60 * 1000)
+        const timer = setTimeout(() => finish("later"), timeoutMs)
         function finish(answer) {
             if (!toastAnswers.has(id)) return
             toastAnswers.delete(id)
@@ -186,7 +196,7 @@ function askUpdate({ name, from, to }) {
             if (!toast.isDestroyed()) toast.destroy()
             resolve(answer)
         }
-        toastAnswers.set(id, finish)
+        toastAnswers.set(id, { finish, answers: ["later", ...answers] })
         toast.on("closed", () => finish("later"))
     })
 }
@@ -326,10 +336,10 @@ function registerIpc() {
         if (!WINDOW_LOG_LEVELS.has(level) || typeof text !== "string") return
         logger.fromWindow("Window", level, text)
     })
-    // An update question's answer (askUpdate)
+    // A question's answer (showToast)
     ipcMain.handle("toast:answer", (event, answer) => {
-        const finish = toastAnswers.get(event.sender.id)
-        if (finish && ["update", "later", "never"].includes(answer)) finish(answer)
+        const question = toastAnswers.get(event.sender.id)
+        if (question?.answers.includes(answer)) question.finish(answer)
         return { ok: true }
     })
     // The window calls this once it listens for events; anything that arrived earlier is sent now
@@ -378,6 +388,8 @@ if (!app.requestSingleInstanceLock()) {
             send,
             log: logger,
             askUpdate,
+            askClose,
+            notify: (text) => balloon(text),
             openProgram,
             backgroundDefault: app.isPackaged,
             onSettingsChanged: applyBackground,

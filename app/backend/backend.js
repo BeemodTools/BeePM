@@ -3,8 +3,8 @@ import { mkdir } from "node:fs/promises"
 import path from "node:path"
 import {
     applyPlan,
+    askBee2ToClose,
     bee2Status,
-    closeBee2,
     createClientContext,
     findBee2Program,
     isBee2Running,
@@ -42,8 +42,10 @@ const quietLog = {
  *   openExternal(url), openPath(dir), showOpenDialog(options)
  *   send(channel, payload)                         events for the window
  *   log                                            the log file (logger.js)
- *   askUpdate({ name, from, to }), openProgram(file), backgroundDefault,
- *   onSettingsChanged(settings)                    running in the background (updateWatcher.js)
+ *   askUpdate({ name, from, to }), askClose(names), notify(text), openProgram(file),
+ *   backgroundDefault, onSettingsChanged(settings) running in the background (updateWatcher.js)
+ *   bee2Process                                    stand-ins for { isRunning, findProgram,
+ *                                                  askToClose } (tests)
  *
  * invoke(channel, ...args) never throws: it resolves to { ok: true, ...data } or
  * { ok: false, error, code?, problems?, ... }. What changes something (installs, publishing,
@@ -76,6 +78,13 @@ export async function createBackend(deps = {}) {
             }
         })
 
+    const bee2Process = {
+        isRunning: isBee2Running,
+        findProgram: findBee2Program,
+        askToClose: askBee2ToClose,
+        ...deps.bee2Process,
+    }
+
     const ctx = await createClientContext({ env, fetch, userAgent: `beepm-app/${appVersion}` })
     const tokens = createAppTokenStore(
         path.join(ctx.paths.configDir, "credentials-app.json"),
@@ -103,6 +112,26 @@ export async function createBackend(deps = {}) {
             }
         },
         onSettingsChanged: deps.onSettingsChanged ?? (() => {}),
+
+        /**
+         * BEE2's program file (its folder holds BEE2's own packages folder): from BEE2 if it's
+         * running, which is remembered, or else the one remembered. Null until BeePM sees BEE2 run.
+         */
+        async bee2Program() {
+            if (await bee2Process.isRunning()) {
+                const program = await bee2Process.findProgram()
+                if (program) {
+                    await this.rememberBee2(program)
+                    return program
+                }
+            }
+            return (await this.settings.load()).bee2Program ?? null
+        },
+        async rememberBee2(program) {
+            if (program && (await this.settings.load()).bee2Program !== program) {
+                await this.settings.update({ bee2Program: program })
+            }
+        },
         log,
         step,
         disposers: [],
@@ -149,11 +178,17 @@ export async function createBackend(deps = {}) {
     // In the background: offers updates when BEE2 opens (see updateWatcher.js)
     const watcher = createUpdateWatcher({
         log,
-        isBee2Running,
-        findBee2: findBee2Program,
-        closeBee2,
+        isBee2Running: bee2Process.isRunning,
+        async findBee2() {
+            const program = await bee2Process.findProgram()
+            await shared.rememberBee2(program).catch(() => {})
+            return program
+        },
+        askBee2ToClose: bee2Process.askToClose,
         openBee2: deps.openProgram ?? (() => {}),
         ask: deps.askUpdate ?? (async () => "later"),
+        askClose: deps.askClose ?? (async () => "later"),
+        notify: deps.notify ?? (() => {}),
         // Updates that would reach BEE2 (it's hooked), except the ones not to ask about again
         async findUpdates() {
             if (!(await bee2Status(ctx.paths, ctx.bee2)).hooked) return []

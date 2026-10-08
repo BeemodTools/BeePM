@@ -258,14 +258,21 @@ banReason, handle}`, `GET /v1/admin/audit`, `POST /v1/admin/import-legacy`.
   **Update** reinstalls to the highest version allowed by the original range.
 - Installs from the prototype (`installed_packages.json`, files `<author>_<ID>.bee_pack`) are
   adopted on first run by matching BEE2 IDs through `/v1/lookup?beeId=`.
-- **Local packages** (core `local.js`, the desktop app's Import): a .bee_pack, a package
-  folder or a folder of those from this PC. BeePM's packages come first: one whose BEE2 ID
-  is on BeePM (`/v1/lookup?beeId=`) is installed from there instead. BEE2's own packages and
-  ones installed from BeePM already are skipped. The rest are copied into `packages/` as
-  `<id>.local.bee_pack` (a folder is zipped with all its files) and listed under `local` in
-  `installed.json`. They never update, and installing a BeePM package with the same BEE2 ID
-  replaces the local copy.
+- **Local packages** (core `local.js`, the desktop app's Import tab): a .bee_pack, a package
+  folder or a folder of those from this PC, also in folders inside it (up to 4 deep, as
+  BEE2 looks into folders that aren't packages). BeePM's packages come first: one whose BEE2
+  ID is on BeePM (`/v1/lookup?beeId=`, 6 at a time) is installed from there instead. BEE2's
+  own packages and ones installed from BeePM already are skipped. The rest are copied into
+  `packages/` as `<id>.local.bee_pack` (a folder is zipped with all its files) and listed
+  under `local` in `installed.json`; Installed shows them tagged Local. They never update,
+  and installing a BeePM package with the same BEE2 ID replaces the local copy. Hooking
+  stops BEE2 loading its own packages folder, so while it's hooked, Import offers that folder
+  (`config.hook.originalPackageDir`; a relative one is resolved against BEE2.exe's folder,
+  which the app remembers whenever it sees BEE2 running).
 - **In the background** (the desktop app; on by default once installed): BeePM starts with
   Windows (`--background`: only the tray), stays in the tray when its window closes, and
   when BEE2 opens it asks about each update: Update, Not now, or Don't ask again (kept in
-  `config/app-settings.json`). Updating closes BEE2, installs, and opens BEE2 again.
+  `config/app-settings.json`). BEE2 has the package files open, so updating asks first:
+  Close BEE2 (closed like its close button does, so it saves; opened again after
+  installing) or When I close it (installed once the user closes BEE2). It's never
+  force-closed for an update, and if it doesn't close, the update waits for it.

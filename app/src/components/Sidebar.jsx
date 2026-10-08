@@ -17,6 +17,7 @@ import CloudOffIcon from "@mui/icons-material/CloudOff"
 import ExploreIcon from "@mui/icons-material/Explore"
 import InventoryIcon from "@mui/icons-material/Inventory"
 import LoginIcon from "@mui/icons-material/Login"
+import MoveToInboxIcon from "@mui/icons-material/MoveToInbox"
 import PublishIcon from "@mui/icons-material/Publish"
 import SettingsIcon from "@mui/icons-material/Settings"
 import { useApp } from "../state/context.js"
@@ -149,8 +150,8 @@ function HookChip({ onOpenSettings }) {
 }
 
 export default function Sidebar({ view, onNavigate }) {
-    const { installed } = useApp()
-    const installedCount = Object.keys(installed).length
+    const { installed, local } = useApp()
+    const installedCount = Object.keys(installed).length + Object.keys(local).length
     const openSettings = () => onNavigate("settings")
     return (
         <Box
@@ -192,6 +193,12 @@ export default function Sidebar({ view, onNavigate }) {
                     badge={installedCount}
                     selected={view === "installed"}
                     onClick={() => onNavigate("installed")}
+                />
+                <NavItem
+                    icon={MoveToInboxIcon}
+                    label="Import"
+                    selected={view === "import"}
+                    onClick={() => onNavigate("import")}
                 />
                 <NavItem
                     icon={PublishIcon}

@@ -84,6 +84,8 @@ export function bee2Handlers(shared) {
             try {
                 return await shared.lock(() =>
                     step(`Setting up BEE2 ${version}`, async () => {
+                        // Where BEE2 is, before it's closed: its packages are offered in Import
+                        await shared.bee2Program().catch(() => null)
                         const config = await loadConfig(ctx.paths)
                         await installBasePackages(ctx.paths, config, {
                             version,
@@ -126,6 +128,8 @@ export function bee2Handlers(shared) {
         "bee2:hook": () =>
             shared.lock(() =>
                 step("Hooking BEE2", async () => {
+                    // Where BEE2 is, before it's closed: its packages are offered in Import
+                    await shared.bee2Program().catch(() => null)
                     const config = await loadConfig(ctx.paths)
                     const result = await hookBee2(ctx.paths, ctx.bee2, config)
                     await saveConfig(ctx.paths, config)

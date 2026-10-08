@@ -59,7 +59,7 @@ function AssetRow({ asset, status, step }) {
 }
 
 function SetupBody({ onClose, onRunningChange }) {
-    const { bee2, refreshBee2, refreshInstalled, notify } = useApp()
+    const { bee2, refreshBee2, refreshInstalled, notify, goTo } = useApp()
     const [current] = useState(bee2?.bee2 ?? null)
     const [releases, setReleases] = useState({ loading: true, list: [], error: null })
     const [version, setVersion] = useState("")
@@ -277,6 +277,11 @@ function SetupBody({ onClose, onRunningChange }) {
                                 loads packages from BeePM: start it to use them.
                             </Alert>
                         )}
+                        {finished && result.hookChanged && (
+                            <Alert severity="info" sx={{ mt: 1.5 }}>
+                                Your own packages aren't gone: import them to load them in BEE2.
+                            </Alert>
+                        )}
                         {phase === "error" && (
                             <ErrorAlert
                                 error={result.error}
@@ -295,6 +300,16 @@ function SetupBody({ onClose, onRunningChange }) {
                             {current?.version ? "Change version" : "Set up"}
                         </Button>
                     </>
+                )}
+                {finished && result.hookChanged && (
+                    <Button
+                        onClick={() => {
+                            onClose()
+                            goTo("import")
+                        }}
+                    >
+                        Import them
+                    </Button>
                 )}
                 {finished && (
                     <Button variant="contained" onClick={onClose}>

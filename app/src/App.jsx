@@ -11,6 +11,7 @@ import Toasts from "./components/Toasts.jsx"
 import AppProvider from "./state/AppProvider.jsx"
 import { useApp } from "./state/context.js"
 import BrowseView from "./views/BrowseView.jsx"
+import ImportView from "./views/ImportView.jsx"
 import InstalledView from "./views/InstalledView.jsx"
 import PublishView from "./views/PublishView.jsx"
 import SettingsView from "./views/SettingsView.jsx"
@@ -18,6 +19,7 @@ import SettingsView from "./views/SettingsView.jsx"
 const TITLES = {
     browse: "Browse Packages",
     installed: "Installed Packages",
+    import: "Import Packages",
     publish: "Publish Package",
     settings: "Settings",
 }
@@ -39,7 +41,7 @@ function Shell() {
     }
 
     // beepm://publish?file=... opens Publish
-    const { publishRequest } = app
+    const { publishRequest, viewRequest } = app
     useEffect(() => {
         if (!publishRequest) return
         setView("publish")
@@ -47,6 +49,14 @@ function Shell() {
             current.has("publish") ? current : new Set(current).add("publish"),
         )
     }, [publishRequest])
+
+    // app.goTo(view) opens a view from anywhere (e.g. Import, after hooking BEE2)
+    useEffect(() => {
+        const id = viewRequest?.view
+        if (!id) return
+        setView(id)
+        setVisited((current) => (current.has(id) ? current : new Set(current).add(id)))
+    }, [viewRequest])
 
     async function refresh() {
         setRefreshing(true)
@@ -63,6 +73,8 @@ function Shell() {
                 )
             case "installed":
                 return <InstalledView query={search.installed} onNavigate={navigate} />
+            case "import":
+                return <ImportView onNavigate={navigate} />
             case "publish":
                 return <PublishView />
             default:

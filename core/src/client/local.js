@@ -25,6 +25,25 @@ const exists = (file) =>
         () => false,
     )
 
+// How deep findPackages looks into folders that aren't packages (BEE2 looks into them too)
+const MAX_DEPTH = 4
+const READS_AT_ONCE = 4
+const LOOKUPS_AT_ONCE = 6
+
+/** Runs fn over every item, `limit` at a time. The results keep the items' order. */
+async function mapLimit(items, limit, fn) {
+    const results = new Array(items.length)
+    let next = 0
+    async function worker() {
+        while (next < items.length) {
+            const index = next++
+            results[index] = await fn(items[index], index)
+        }
+    }
+    await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
+    return results
+}
+
 /** A .bee_pack/.zip file or a package folder: { path, isFolder, beeId, name } or { path, problem }. */
 async function inspect(target, isFolder) {
     try {
@@ -42,9 +61,11 @@ async function inspect(target, isFolder) {
 
 /**
  * The packages in `target`: a .bee_pack/.zip file, a package folder (info.txt at its root), or
- * a folder holding those. Returns [{ path, isFolder, beeId, name } or { path, problem }].
+ * a folder holding those, also in folders inside it (like BEE2's packages folder).
+ * onProgress({ done, total }) as they're read. Returns
+ * [{ path, isFolder, beeId, name } or { path, problem }].
  */
-export async function findPackages(target) {
+export async function findPackages(target, { onProgress } = {}) {
     const info = await stat(target).catch(() => null)
     if (!info) throw new InstallError(`${target} doesn't exist.`)
     if (!info.isDirectory()) {
@@ -53,18 +74,29 @@ export async function findPackages(target) {
     }
     if (await exists(path.join(target, "info.txt"))) return [await inspect(target, true)]
 
-    const found = []
-    const entries = await readdir(target, { withFileTypes: true })
-    entries.sort((a, b) => a.name.localeCompare(b.name))
-    for (const entry of entries) {
-        if (entry.name.startsWith(".")) continue
-        const full = path.join(target, entry.name)
-        if (entry.isFile() && isPackFile(entry.name)) found.push(await inspect(full, false))
-        else if (entry.isDirectory() && (await exists(path.join(full, "info.txt")))) {
-            found.push(await inspect(full, true))
+    const candidates = [] // [path, isFolder]
+    async function walk(dir, depth) {
+        const entries = await readdir(dir, { withFileTypes: true }).catch(() => [])
+        entries.sort((a, b) => a.name.localeCompare(b.name))
+        for (const entry of entries) {
+            if (entry.name.startsWith(".")) continue
+            const full = path.join(dir, entry.name)
+            if (entry.isFile() && isPackFile(entry.name)) candidates.push([full, false])
+            else if (entry.isDirectory()) {
+                if (await exists(path.join(full, "info.txt"))) candidates.push([full, true])
+                else if (depth < MAX_DEPTH) await walk(full, depth + 1)
+            }
         }
     }
-    return found
+    await walk(target, 1)
+
+    let done = 0
+    onProgress?.({ done, total: candidates.length })
+    return mapLimit(candidates, READS_AT_ONCE, async ([full, isFolder]) => {
+        const found = await inspect(full, isFolder)
+        onProgress?.({ done: ++done, total: candidates.length })
+        return found
+    })
 }
 
 /**
@@ -74,8 +106,9 @@ export async function findPackages(target) {
  *   "skip"   with a `reason`: one of BEE2's own, installed from BeePM already, a second
  *            package with the same BEE2 ID, or it can't be read
  * Returns { items, offline } (offline: the registry couldn't be asked, so nothing is "beepm").
+ * The registry is asked about a few packages at a time: onProgress({ done, total }).
  */
-export async function planImport(ctx, found) {
+export async function planImport(ctx, found, { onProgress } = {}) {
     const { api, paths } = ctx
     const [config, installed] = await Promise.all([loadConfig(paths), loadInstalled(paths)])
     const base = new Set(config.bee2?.basePackages ?? [])
@@ -83,27 +116,25 @@ export async function planImport(ctx, found) {
         Object.entries(installed.packages).map(([name, entry]) => [entry.beeId, name]),
     )
     const seen = new Set()
-    const items = []
-    let offline = false
-    for (const item of found) {
-        const skip = (reason) => items.push({ ...item, action: "skip", reason })
-        if (item.problem) {
-            skip(item.problem)
-            continue
-        }
-        if (seen.has(item.beeId)) {
-            skip("Another package here has the same ID")
-            continue
-        }
+    // What's decided without the registry; null for the ones to look up
+    const items = found.map((item) => {
+        const skip = (reason) => ({ ...item, action: "skip", reason })
+        if (item.problem) return skip(item.problem)
+        if (seen.has(item.beeId)) return skip("Another package here has the same ID")
         seen.add(item.beeId)
-        if (base.has(item.beeId)) {
-            skip("It's one of BEE2's own packages")
-            continue
-        }
+        if (base.has(item.beeId)) return skip("It's one of BEE2's own packages")
         if (fromBeepm.has(item.beeId)) {
-            skip(`${fromBeepm.get(item.beeId)} is installed from BeePM`)
-            continue
+            return skip(`${fromBeepm.get(item.beeId)} is installed from BeePM`)
         }
+        return null
+    })
+
+    const lookUp = items.flatMap((item, index) => (item ? [] : [index]))
+    let offline = false
+    let done = 0
+    onProgress?.({ done, total: lookUp.length })
+    await mapLimit(lookUp, LOOKUPS_AT_ONCE, async (index) => {
+        const item = found[index]
         let names = []
         if (!offline) {
             try {
@@ -113,12 +144,11 @@ export async function planImport(ctx, found) {
             }
         }
         const parsed = names.length === 1 ? parseName(names[0]) : null
-        if (parsed) {
-            items.push({ ...item, action: "beepm", package: formatName(parsed.scope, parsed.name) })
-        } else {
-            items.push({ ...item, action: "local", replaces: Boolean(installed.local[item.beeId]) })
-        }
-    }
+        items[index] = parsed
+            ? { ...item, action: "beepm", package: formatName(parsed.scope, parsed.name) }
+            : { ...item, action: "local", replaces: Boolean(installed.local[item.beeId]) }
+        onProgress?.({ done: ++done, total: lookUp.length })
+    })
     return { items, offline }
 }
 

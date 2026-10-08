@@ -9,9 +9,9 @@ import UpdateToast from "./components/UpdateToast.jsx"
 import { theme } from "./theme.js"
 import "./index.css"
 
-// The same page also draws the window that asks about an update (backend/main.js askUpdate)
+// The same page also draws the windows that ask about updates (backend/main.js showToast)
 const params = new URLSearchParams(window.location.search)
-const toast = params.get("toast") === "update"
+const toast = ["update", "close"].includes(params.get("toast")) ? params.get("toast") : null
 
 function render() {
     createRoot(document.getElementById("root")).render(
@@ -20,6 +20,7 @@ function render() {
                 <CssBaseline />
                 {toast ? (
                     <UpdateToast
+                        kind={toast}
                         name={params.get("name")}
                         from={params.get("from")}
                         to={params.get("to")}

@@ -73,16 +73,18 @@ after(async () => {
 
 /**
  * A backend like the one main.js creates, with Electron's parts replaced by recorders.
- * fetch: a stand-in for the network (e.g. to play GitHub); log: a Logger.
+ * fetch: a stand-in for the network (e.g. to play GitHub); log: a Logger; bee2Process: a
+ * stand-in BEE2 process; home: another BEEPM_HOME.
  */
-async function startBackend({ fetch, log, onSettingsChanged } = {}) {
+async function startBackend({ fetch, log, onSettingsChanged, bee2Process, home } = {}) {
     const opened = []
     const events = []
     const backend = await createBackend({
-        env,
+        env: home ? { ...env, BEEPM_HOME: home } : env,
         fetch,
         log,
         onSettingsChanged,
+        bee2Process,
         appVersion: "1.0.0-test",
         openExternal: async (url) => opened.push(url),
         send: (channel, payload) => events.push({ channel, payload }),
@@ -462,7 +464,15 @@ test(
 )
 
 test("importing from this PC: packages on BeePM come from there, the rest are copied in", async () => {
-    const { backend, nextEvent } = await startBackend()
+    const { backend, events, nextEvent } = await startBackend()
+    const phases = () =>
+        new Set(
+            events
+                .splice(0)
+                .flatMap((e) =>
+                    e.channel === "packages:import-progress" ? [e.payload.phase] : [],
+                ),
+        )
     const started = await backend.invoke("auth:login")
     await finishInBrowser(started.url, "Importer", "importer")
     assert.equal((await nextEvent("auth:login-result")).ok, true)
@@ -490,6 +500,7 @@ test("importing from this PC: packages on BeePM come from there, the rest are co
     )
     await writeFile(path.join(saved, "my-own", "info.txt"), '"ID" "MY_OWN"\n"Name" "My Own"\n')
 
+    events.length = 0
     const scan = await backend.invoke("packages:import-scan", saved)
     assert.equal(scan.ok, true, scan.error)
     assert.deepEqual(
@@ -499,10 +510,12 @@ test("importing from this PC: packages on BeePM come from there, the rest are co
             ["My Own", "local", null],
         ],
     )
+    assert.deepEqual([...phases()], ["read", "check"]) // the window's progress bar
     const done = await backend.invoke("packages:import-apply", scan.importId)
     assert.equal(done.ok, true, done.error)
     assert.deepEqual(done.installed, ["@importer/importer-items@1.0.0"])
     assert.deepEqual(done.imported, ["My Own"])
+    assert.deepEqual([...phases()], ["copy", "download"])
 
     const { packages, local } = await backend.invoke("packages:installed")
     assert.ok(packages["@importer/importer-items"])
@@ -512,6 +525,31 @@ test("importing from this PC: packages on BeePM come from there, the rest are co
     assert.equal((await backend.invoke("packages:remove-local", "MY_OWN")).ok, true)
     await assert.rejects(access(path.join(env.BEEPM_HOME, "packages", "my_own.local.bee_pack")))
     assert.deepEqual((await backend.invoke("packages:installed")).local, {})
+})
+
+test("while BEE2 is hooked, Import offers the packages folder BEE2 used before", async () => {
+    // BEE2's setting was "packages/": the folder next to BEE2.exe
+    const home = path.join(dir, "sources-home")
+    const bee2Folder = path.join(dir, "BEE2_4.46.0_win")
+    await mkdir(path.join(bee2Folder, "packages"), { recursive: true })
+    await mkdir(path.join(home, "config"), { recursive: true })
+    await writeFile(
+        path.join(home, "config", "config.json"),
+        JSON.stringify({ hook: { originalPackageDir: "packages/", hookedAt: "2026-10-08" } }),
+    )
+    const bee2 = { running: false }
+    const bee2Process = {
+        isRunning: async () => bee2.running,
+        findProgram: async () => path.join(bee2Folder, "BEE2.exe"),
+    }
+    const { backend } = await startBackend({ home, bee2Process })
+    const sources = async () => (await backend.invoke("packages:import-sources")).folders
+
+    assert.deepEqual(await sources(), []) // BeePM hasn't seen BEE2 run, so it can't tell where
+    bee2.running = true
+    assert.deepEqual(await sources(), [path.join(bee2Folder, "packages")])
+    bee2.running = false
+    assert.deepEqual(await sources(), [path.join(bee2Folder, "packages")]) // remembered
 })
 
 test("settings: running in the background, and updates not to ask about again", async () => {

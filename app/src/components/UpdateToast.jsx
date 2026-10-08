@@ -3,11 +3,13 @@ import CloseIcon from "@mui/icons-material/Close"
 import Brand from "./Brand.jsx"
 
 /**
- * The small window in the bottom-right corner that asks about an update when BEE2 opens
- * (backend/main.js askUpdate). Closing it is "Not now".
+ * The small window in the bottom-right corner (backend/main.js showToast). "update" asks about
+ * an update when BEE2 opens; "close" asks to close BEE2 for the updates picked, since BEE2 has
+ * the package files open. Closing it is "Not now" / "When I close it".
  */
-export default function UpdateToast({ name, from, to }) {
+export default function UpdateToast({ kind = "update", name, from, to }) {
     const answer = (value) => window.beepm?.toast?.answer(value)
+    const close = kind === "close"
     return (
         <Box
             sx={{
@@ -29,7 +31,7 @@ export default function UpdateToast({ name, from, to }) {
                 </Typography>
                 <IconButton
                     size="small"
-                    aria-label="Not now"
+                    aria-label={close ? "When I close it" : "Not now"}
                     onClick={() => answer("later")}
                     sx={{ mr: -1, color: "#888" }}
                 >
@@ -37,25 +39,38 @@ export default function UpdateToast({ name, from, to }) {
                 </IconButton>
             </Box>
             <Typography noWrap sx={{ color: "#fff", fontWeight: 600, mt: 0.5 }}>
-                Update {name}?
+                {close ? "Close BEE2 to update?" : `Update ${name}?`}
             </Typography>
             <Typography variant="body2" noWrap sx={{ color: "#888" }}>
-                {from} → {to}
+                {close ? "Save your work in BEE2 first." : `${from} → ${to}`}
             </Typography>
             <Box sx={{ display: "flex", gap: 1, mt: "auto" }}>
-                <Button size="small" variant="contained" onClick={() => answer("update")}>
-                    Update
-                </Button>
-                <Button size="small" variant="outlined" onClick={() => answer("later")}>
-                    Not now
-                </Button>
-                <Button
-                    size="small"
-                    onClick={() => answer("never")}
-                    sx={{ ml: "auto", color: "#888" }}
-                >
-                    Don't ask again
-                </Button>
+                {close ? (
+                    <>
+                        <Button size="small" variant="contained" onClick={() => answer("now")}>
+                            Close BEE2
+                        </Button>
+                        <Button size="small" variant="outlined" onClick={() => answer("later")}>
+                            When I close it
+                        </Button>
+                    </>
+                ) : (
+                    <>
+                        <Button size="small" variant="contained" onClick={() => answer("update")}>
+                            Update
+                        </Button>
+                        <Button size="small" variant="outlined" onClick={() => answer("later")}>
+                            Not now
+                        </Button>
+                        <Button
+                            size="small"
+                            onClick={() => answer("never")}
+                            sx={{ ml: "auto", color: "#888" }}
+                        >
+                            Don't ask again
+                        </Button>
+                    </>
+                )}
             </Box>
         </Box>
     )

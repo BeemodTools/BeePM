@@ -33,6 +33,29 @@ export function closeBee2() {
     })
 }
 
+/**
+ * Asks BEE2 to close the way its close button does (its main window only), so it exits
+ * normally and saves (unlike closeBee2). Resolves to whether BEE2 was asked: not when it isn't
+ * running, or a dialog is open in it. Windows only: elsewhere the user closes BEE2.
+ * BEEPM_NO_CLOSE_BEE2=1 turns this off (tests).
+ */
+export function askBee2ToClose() {
+    if (process.env.BEEPM_NO_CLOSE_BEE2 || process.platform !== "win32") {
+        return Promise.resolve(false)
+    }
+    // CloseMainWindow() is false if there's no window to close, or it's disabled by a dialog
+    const script =
+        "@(Get-Process -Name BEE2 -ErrorAction SilentlyContinue | Where-Object { $_.CloseMainWindow() }).Count"
+    return new Promise((resolve) => {
+        execFile(
+            "powershell",
+            ["-NoProfile", "-NonInteractive", "-Command", script],
+            { windowsHide: true },
+            (err, stdout) => resolve(!err && Number(String(stdout ?? "").trim()) > 0),
+        )
+    })
+}
+
 /** Whether BEE2 is running (BEE2.exe on Windows, a BEE2 process elsewhere). */
 export function isBee2Running() {
     const [command, args] =
