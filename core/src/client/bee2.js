@@ -2,6 +2,7 @@ import { execFile } from "node:child_process"
 import { open, readdir, readFile, rm, rmdir, stat, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { hashFile } from "../pack.js"
+import { bee2RunEnd } from "./bee2log.js"
 import { exists, freePath, moveFile } from "./files.js"
 import { bee2PackagesDir, beepmPackagesDir, useBee2Folder } from "./paths.js"
 import { scanPackages } from "./scan.js"
@@ -50,38 +51,168 @@ export async function askBee2ToClose(folder = null) {
     return Number(count?.trim()) > 0
 }
 
+// Each BEE2 process: its ID, main window (0: none), start (ms) and program file. The last two
+// are empty when they can't be seen (BEE2 run as administrator).
+const DESCRIBE_BEE2 = String.raw`Get-Process -Name BEE2 -ErrorAction SilentlyContinue | ForEach-Object {
+    $started = try { ([DateTimeOffset]$_.StartTime).ToUnixTimeMilliseconds() } catch { '' }
+    "$($_.Id)|$([int64]$_.MainWindowHandle)|$started|$($_.Path)"
+}`
+
+/**
+ * How BEE2's processes are looked at (Windows; tests swap these):
+ *   ids()       the IDs of the BEE2.exe processes (tasklist, which is quick), or null
+ *   describe()  [{ pid, windowed, started, program }] for each (PowerShell), or null
+ */
+export const bee2System = {
+    ids: () =>
+        new Promise((resolve) => {
+            execFile(
+                "tasklist",
+                ["/FI", "IMAGENAME eq BEE2.exe", "/FO", "CSV", "/NH"],
+                { windowsHide: true },
+                (err, stdout) => {
+                    if (err) return resolve(null)
+                    const rows = String(stdout).matchAll(/^"BEE2\.exe","(\d+)"/gim)
+                    resolve([...rows].map((row) => Number(row[1])))
+                },
+            )
+        }),
+    async describe() {
+        const out = await powershell(DESCRIBE_BEE2)
+        if (out === null) return null
+        return out.split(/\r?\n/).flatMap((line) => {
+            const match = /^(\d+)\|(-?\d+)\|(\d*)\|(.*)$/.exec(line.trim())
+            if (!match) return []
+            const [, pid, window, started, program] = match
+            return [
+                {
+                    pid: Number(pid),
+                    windowed: window !== "0",
+                    started: started ? Number(started) : null,
+                    program: program.trim() || null,
+                },
+            ]
+        })
+    },
+}
+
+// What's known of each BEE2 process, by ID, while it runs: its program and start (they don't
+// change), and leftover once it's seen to be one
+const known = new Map()
+// The latest look, which questions asked together share: { at, processes (a promise) }
+let latest = null
+const SHARED_MS = 1000
+
+/**
+ * The BEE2 processes running (Windows; elsewhere none are listed):
+ * [{ pid, program, started (ms), leftover }]. program and started are null when they can't be
+ * seen (BEE2 run as administrator).
+ * leftover (when its run ended, else null) marks what's left of a BEE2 that's over: BEE2 can
+ * crash and leave its process running without a window. It holds BEE2's log and package files
+ * open, but it isn't BEE2 running: the log of its run says the run ended.
+ * A look shortly before is used again (fresh: not).
+ */
+export function listBee2Processes({ fresh = false } = {}) {
+    if (fresh || !latest || Date.now() - latest.at >= SHARED_MS) {
+        latest = { at: Date.now(), processes: lookAtBee2() }
+    }
+    return latest.processes
+}
+
+async function lookAtBee2() {
+    if (process.platform !== "win32") return []
+    const ids = (await bee2System.ids()) ?? []
+    for (const pid of known.keys()) if (!ids.includes(pid)) known.delete(pid)
+    // PowerShell is slower: only when there's a process it hasn't described, or to see that
+    // one whose run is over has no window
+    let described = null
+    const describe = async () => (described ??= (await bee2System.describe()) ?? [])
+    if (ids.some((pid) => !known.has(pid))) {
+        for (const proc of await describe()) {
+            if (ids.includes(proc.pid) && !known.has(proc.pid)) {
+                known.set(proc.pid, {
+                    program: proc.program,
+                    started: proc.started,
+                    leftover: null,
+                })
+            }
+        }
+    }
+    const processes = []
+    for (const pid of ids) {
+        const info = known.get(pid) ?? { program: null, started: null, leftover: null }
+        if (info.leftover === null && info.program && info.started !== null) {
+            const ended = await bee2RunEnd(path.dirname(info.program), info.started)
+            if (ended !== null) {
+                const now = (await describe()).find((proc) => proc.pid === pid)
+                if (now && !now.windowed && now.started === info.started) info.leftover = ended
+            }
+        }
+        processes.push({ pid, ...info })
+    }
+    return processes
+}
+
+const fromFolder = (proc, folder) => !folder || !proc.program || isInside(proc.program, folder)
+
 /**
  * Whether BEE2 is running: the one in `folder` (its program is in there), or any BEE2 without
- * one (BEE2.exe on Windows, a BEE2 process elsewhere, where the folder can't be told).
+ * one (BEE2.exe on Windows, a BEE2 process elsewhere, where the folder can't be told). One whose
+ * program can't be seen (BEE2 run as administrator) might be that BEE2, so it counts. What's
+ * left of a BEE2 that crashed doesn't (see listBee2Processes).
  */
 export async function isBee2Running(folder = null) {
-    if (folder && process.platform === "win32") {
-        const count = await powershell(`@(${BEE2_PROCESSES}).Count`, { BEEPM_BEE2_DIR: folder })
-        if (count !== null) return Number(count.trim()) > 0
-    }
-    const [command, args] =
-        process.platform === "win32"
-            ? ["tasklist", ["/FI", "IMAGENAME eq BEE2.exe", "/FO", "CSV", "/NH"]]
-            : ["pgrep", ["-x", "BEE2"]]
-    return new Promise((resolve) => {
-        execFile(command, args, { windowsHide: true }, (err, stdout) => {
-            if (process.platform !== "win32") return resolve(!err)
-            resolve(!err && /"BEE2\.exe"/i.test(String(stdout)))
+    if (process.platform !== "win32") {
+        return new Promise((resolve) => {
+            execFile("pgrep", ["-x", "BEE2"], (err) => resolve(!err))
         })
-    })
+    }
+    return (await listBee2Processes()).some((p) => p.leftover === null && fromFolder(p, folder))
 }
 
 /** The program files of the running BEE2s, one per BEE2 (Windows only). */
 export async function findBee2Programs() {
-    if (process.platform !== "win32") return []
-    const out = await powershell(
-        "Get-Process -Name BEE2 -ErrorAction SilentlyContinue | ForEach-Object { $_.Path }",
-    )
-    const programs = String(out ?? "")
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter(Boolean)
+    const programs = (await listBee2Processes())
+        .filter((p) => p.leftover === null && p.program)
+        .map((p) => p.program)
     return [...new Map(programs.map((p) => [normalize(p), p])).values()]
+}
+
+/** What's left of BEE2s that crashed (see listBee2Processes): the ones from `folder`, else any. */
+export async function findLeftoverBee2(folder = null) {
+    return (await listBee2Processes()).filter((p) => p.leftover !== null && fromFolder(p, folder))
+}
+
+// Ends the processes in $env:BEEPM_LEFTOVERS ("<ID>:<start ms>,..."), each only while it's still
+// that process (by its start) and has no window
+const END_LEFTOVERS = String.raw`$ended = 0
+foreach ($target in $env:BEEPM_LEFTOVERS.Split(',')) {
+    $id, $started = $target.Split(':')
+    $proc = Get-Process -Id $id -ErrorAction SilentlyContinue
+    if (-not $proc -or [int64]$proc.MainWindowHandle -ne 0) { continue }
+    try {
+        if (([DateTimeOffset]$proc.StartTime).ToUnixTimeMilliseconds() -ne [int64]$started) { continue }
+        $proc.Kill()
+        [void]$proc.WaitForExit(5000)
+        $ended++
+    } catch {}
+}
+$ended`
+
+/**
+ * Ends what's left of BEE2s that crashed (see listBee2Processes), the ones from `folder` (else
+ * any): it holds BEE2's package files open. Resolves to how many were ended.
+ * BEEPM_NO_CLOSE_BEE2=1 turns this off (tests).
+ */
+export async function endLeftoverBee2(folder = null) {
+    if (process.env.BEEPM_NO_CLOSE_BEE2 || process.platform !== "win32") return 0
+    const left = await findLeftoverBee2(folder)
+    if (!left.length) return 0
+    const out = await powershell(END_LEFTOVERS, {
+        BEEPM_LEFTOVERS: left.map((p) => `${p.pid}:${p.started}`).join(","),
+    })
+    latest = null // they're gone
+    return Number(out?.trim()) || 0
 }
 
 /** The program file of the running BEE2 (the one in `folder`, else any), or null. */

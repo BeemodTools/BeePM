@@ -1,13 +1,24 @@
+import { useEffect } from "react"
 import { Box, Button, IconButton, Typography } from "@mui/material"
 import CloseIcon from "@mui/icons-material/Close"
+import { playChime } from "../lib/chime.js"
 import Brand from "./Brand.jsx"
 
 /**
  * What a corner question says, and its answers: [label, answer, style]. The first answer is
  * the main one; "quiet" ones go to the right. Closing the window is always "later".
  */
-function question({ kind, name, from, to, count, folder, switching, version }) {
+function question({ kind, name, from, to, count, folder, switching, version, text }) {
     switch (kind) {
+        case "broken":
+            return {
+                title: `BEE2 couldn't load ${name}`,
+                text: text || "Removing it lets BEE2 start.",
+                answers: [
+                    ["Remove it", "remove"],
+                    ["Not now", "later"],
+                ],
+            }
         case "app-update":
             return {
                 title: `BeePM ${version} is ready`,
@@ -82,11 +93,12 @@ function question({ kind, name, from, to, count, folder, switching, version }) {
 
 /**
  * The small window in the bottom-right corner (backend/main.js ask): what BeePM asks about when
- * BEE2 opens (see backend/updateWatcher.js). Closing it is "later".
+ * BEE2 opens (see backend/updateWatcher.js). It chimes when it appears. Closing it is "later".
  */
 export default function UpdateToast(props) {
     const answer = (value) => window.beepm?.toast?.answer(value)
     const { title, text, answers } = question(props)
+    useEffect(playChime, [])
     return (
         <Box
             sx={{

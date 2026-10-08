@@ -29,6 +29,8 @@ import GitHubIcon from "@mui/icons-material/GitHub"
 import LinkIcon from "@mui/icons-material/Link"
 import LoginIcon from "@mui/icons-material/Login"
 import LogoutIcon from "@mui/icons-material/Logout"
+import RestartAltIcon from "@mui/icons-material/RestartAlt"
+import UpdateIcon from "@mui/icons-material/Update"
 import { api, onEvent } from "../api.js"
 import Brand from "../components/Brand.jsx"
 import DiscordIcon from "../components/DiscordIcon.jsx"
@@ -40,6 +42,7 @@ const PROVIDERS = [
     { id: "github", icon: GitHubIcon },
 ]
 const NICKNAME_MAX = 50
+const DISCORD_INVITE = "https://discord.gg/jNr7DUsRTC" // BeePM's Discord server
 const cardSx = { mb: 3, backgroundColor: "#262829", border: "1px solid #3a3a3a" }
 const rowSx = {
     display: "flex",
@@ -49,13 +52,13 @@ const rowSx = {
     borderTop: "1px solid #333",
 }
 
-function Section({ title, children }) {
+function Section({ title, children, sx }) {
     return (
         <>
             <Typography variant="subtitle2" sx={{ mb: 1.5, color: "#888" }}>
                 {title}
             </Typography>
-            <Card variant="outlined" sx={cardSx}>
+            <Card variant="outlined" sx={{ ...cardSx, ...sx }}>
                 <CardContent sx={{ p: 2.5, "&:last-child": { pb: 2.5 } }}>{children}</CardContent>
             </Card>
         </>
@@ -562,7 +565,10 @@ function Bee2Section() {
     )
 }
 
-/** BeePM's version and its own updates (backend/appUpdater.js), and the logs folder. */
+/**
+ * About: BeePM's version and its own updates (backend/appUpdater.js), then a card of its own
+ * below with the buttons: updating, the Discord server and the logs folder.
+ */
 function AboutSection() {
     const { appInfo, notify } = useApp()
     const [update, setUpdate] = useState(null)
@@ -583,6 +589,11 @@ function AboutSection() {
         if (!res.ok) notify(res.error, "error")
     }
 
+    async function openDiscord() {
+        const res = await api.app.openExternal(DISCORD_INVITE)
+        if (!res.ok) notify(res.error, "error")
+    }
+
     const phase = update?.phase
     const updateText = {
         checking: "Looking for updates…",
@@ -593,8 +604,8 @@ function AboutSection() {
     }[phase]
 
     return (
-        <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
-            <Box sx={{ flex: 1 }}>
+        <>
+            <Section title="ABOUT" sx={{ mb: 1.5 }}>
                 <Typography sx={{ color: "#fff", fontWeight: 500 }}>
                     <Brand /> {appInfo?.version ?? ""}
                 </Typography>
@@ -611,33 +622,43 @@ function AboutSection() {
                         {updateText}
                     </Typography>
                 )}
-            </Box>
-            <Box
-                sx={{
-                    display: "flex",
-                    flexDirection: "column",
-                    alignItems: "flex-end",
-                    gap: 0.5,
-                    flexShrink: 0,
-                }}
-            >
-                {phase === "ready" ? (
-                    <Button variant="contained" onClick={() => updateNow("restart")}>
-                        Restart to update
+            </Section>
+            <Card variant="outlined" sx={cardSx}>
+                <CardContent
+                    sx={{
+                        display: "flex",
+                        flexWrap: "wrap",
+                        gap: 1,
+                        p: 1.5,
+                        "&:last-child": { pb: 1.5 },
+                    }}
+                >
+                    {phase === "ready" ? (
+                        <Button
+                            variant="contained"
+                            startIcon={<RestartAltIcon />}
+                            onClick={() => updateNow("restart")}
+                        >
+                            Restart to update
+                        </Button>
+                    ) : phase && phase !== "off" ? (
+                        <Button
+                            startIcon={<UpdateIcon />}
+                            onClick={() => updateNow("check")}
+                            disabled={phase === "checking" || phase === "downloading"}
+                        >
+                            Check for updates
+                        </Button>
+                    ) : null}
+                    <Button startIcon={<DiscordIcon />} onClick={openDiscord}>
+                        Discord server
                     </Button>
-                ) : phase && phase !== "off" ? (
-                    <Button
-                        onClick={() => updateNow("check")}
-                        disabled={phase === "checking" || phase === "downloading"}
-                    >
-                        Check for updates
+                    <Button startIcon={<FolderOpenIcon />} onClick={openLogs}>
+                        Open logs folder
                     </Button>
-                ) : null}
-                <Button startIcon={<FolderOpenIcon />} onClick={openLogs}>
-                    Open logs folder
-                </Button>
-            </Box>
-        </Box>
+                </CardContent>
+            </Card>
+        </>
     )
 }
 
@@ -650,9 +671,7 @@ export default function SettingsView() {
             <Section title="BEE2">
                 <Bee2Section />
             </Section>
-            <Section title="ABOUT">
-                <AboutSection />
-            </Section>
+            <AboutSection />
         </Box>
     )
 }

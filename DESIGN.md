@@ -330,6 +330,24 @@ banReason, handle}`, `GET /v1/admin/audit`, `POST /v1/admin/import-legacy`.
   close, the changes wait for it. A BEE2 launched from another folder (or before BeePM knows
   one) is asked about first: Use this BEE2 switches BeePM to it; Not now or Don't ask again
   (kept in `config/app-settings.json`) leave it alone: it isn't checked, and never closed.
+  The corner windows chime when they appear. When BeePM's BEE2 closes, the log of that run
+  (core's `bee2log.js`) says whether a package broke it: a crash on a package it couldn't parse
+  ("Error occured parsing TEMP23:VERSION item!", with the cause before it) or "An error
+  occurred" / "Multiple errors occurred when loading packages" naming one (not duplicates,
+  which the BEE2 check handles; BEE2's warnings don't count). "BEE2 couldn't load <package>"
+  offers Remove it (to the Recycle Bin, uninstalled if it's BeePM's; BEE2 opens again) or Not
+  now. A run's log is the first `<BEE2>/logs/bee2*.log` written to after it started, not always
+  `bee2.log`: a log that's still open can't be moved aside, so the next run writes `bee2.1.log`.
+  BEE2 4.46 can crash and leave its process running without a window (it logs "Trio exited
+  with exception", shows its error, then hangs). That process holds its log and package files
+  open, so it can't be how BeePM tells BEE2 is open: a BEE2 process without a window whose
+  run's log says the run ended ("Trio exited ...") counts as closed (core's
+  `listBee2Processes`; tasklist each look, PowerShell only for a new process or a run that
+  ended). It's ended, by its ID and start time, once BEE2 opens again or before BeePM changes
+  package files. A crash BeePM didn't see run (too quick, or before BeePM started) is found by
+  what it left running and offered the same way; BEE2 opens again only if it was just now.
+  While BEE2 is open, a write to its logs folder looks again once the log is quiet for a
+  second, so a crash is seen right away.
 - **BeePM's own updates** (the installed desktop app): electron-updater looks at the GitHub
   releases of BeemodTools/BeePM after startup and every 6 hours, downloads a newer version in
   the background and asks in the corner whether to restart now; otherwise the update installs

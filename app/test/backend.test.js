@@ -85,6 +85,7 @@ async function startBackend({
     ask,
     showReview,
     showContents,
+    openProgram,
 } = {}) {
     const opened = []
     const events = []
@@ -97,6 +98,7 @@ async function startBackend({
         ask,
         showReview,
         showContents,
+        openProgram,
         appVersion: "1.0.0-test",
         openExternal: async (url) => opened.push(url),
         send: (channel, payload) => events.push({ channel, payload }),
@@ -570,6 +572,103 @@ test("the BEE2 check: duplicates and packages that are on BeePM, fixed once BEE2
 
     const after = await backend.invoke("bee2:check")
     assert.deepEqual([after.duplicates.packages, after.onBeepm], [[], []])
+})
+
+test("a package that crashed BEE2 is found in its log and removed, and BEE2 opens again", async () => {
+    const folder = await fakeBee2(path.join(dir, "crash-bee2", "BEE2"))
+    const program = path.join(folder, "BEE2.exe")
+    const broken = path.join(folder, "packages", "ucp_temp23.bee_pack")
+    await writeFile(broken, await zipBytes({ "info.txt": '"ID" "TEMP23"\n"Name" "Temp23"\n' }))
+    const bee2 = { running: false }
+    const asked = []
+    const opened = []
+    const { backend } = await startBackend({
+        home: path.join(dir, "crash-home"),
+        bee2Process: {
+            isRunning: async () => bee2.running,
+            findProgram: async () => (bee2.running ? program : null),
+            programs: async () => (bee2.running ? [program] : []),
+            leftovers: async () => [],
+        },
+        ask: async (question) => {
+            asked.push(question)
+            return question.kind === "broken" ? "remove" : "later"
+        },
+        openProgram: (file) => opened.push(file),
+    })
+    assert.equal((await backend.invoke("bee2:set-folder", folder)).ok, true)
+
+    bee2.running = true
+    await backend.watcher.check()
+    // BEE2 crashes on it, like BEE2 4.46 logs it
+    await writeFile(
+        path.join(folder, "logs", "bee2.log"),
+        [
+            "[ERROR] core.done_callback(): Trio exited with exception",
+            '                  | ValueError: Invalid Item ID "VERSION". IDs cannot be any of the following: NAME, VERSION, ID, TYPE',
+            "              | The above exception was the direct cause of the following exception:",
+            "              | ValueError: Error occured parsing TEMP23:VERSION item!",
+        ].join("\r\n"),
+    )
+    bee2.running = false
+    await backend.watcher.check()
+
+    const question = asked.find((q) => q.kind === "broken")
+    assert.equal(question.name, "Temp23")
+    assert.match(question.message, /Invalid Item ID "VERSION"/)
+    await assert.rejects(access(broken)) // gone from BEE2's packages folder (to BeePM's backups)
+    await access(path.join(dir, "crash-home", "replaced", "ucp_temp23.bee_pack"))
+    assert.deepEqual(opened, [program])
+    // Stops watching BEE2's logs folder too: on Windows, watching a folder that's then deleted
+    // keeps Node from exiting
+    await backend.dispose()
+})
+
+test("BEE2 left running after it crashed: ended before what broke it is removed", async () => {
+    const folder = await fakeBee2(path.join(dir, "leftover-bee2", "BEE2"))
+    const program = path.join(folder, "BEE2.exe")
+    const broken = path.join(folder, "packages", "ucp_temp23.bee_pack")
+    await writeFile(broken, await zipBytes({ "info.txt": '"ID" "TEMP23"\n"Name" "Temp23"\n' }))
+    // It crashed right away, before BeePM saw it open, and its process stays without a window
+    const started = Date.now() - 3000
+    let left = [{ pid: 4242, program, started, leftover: Date.now() }]
+    const happened = []
+    const { backend } = await startBackend({
+        home: path.join(dir, "leftover-home"),
+        bee2Process: {
+            isRunning: async () => false,
+            findProgram: async () => null,
+            programs: async () => [],
+            leftovers: async () => left,
+            endLeftovers: async (from) => {
+                assert.equal(from, folder) // only BeePM's BEE2
+                happened.push(`ended ${left.length}`)
+                const ended = left.length
+                left = []
+                return ended
+            },
+        },
+        ask: async (question) => {
+            happened.push(`asked ${question.kind}`)
+            return question.kind === "broken" ? "remove" : "later"
+        },
+        openProgram: (file) => happened.push(`opened ${path.basename(file)}`),
+    })
+    assert.equal((await backend.invoke("bee2:set-folder", folder)).ok, true)
+    await writeFile(
+        path.join(folder, "logs", "bee2.log"),
+        [
+            "[ERROR] core.done_callback(): Trio exited with exception",
+            '                  | ValueError: Invalid Item ID "VERSION". IDs cannot be any of the following: NAME, VERSION, ID, TYPE',
+            "              | ValueError: Error occured parsing TEMP23:VERSION item!",
+        ].join("\r\n"),
+    )
+    await backend.watcher.check()
+    assert.deepEqual(happened, ["asked broken", "ended 1", "opened BEE2.exe"])
+    await assert.rejects(access(broken))
+    await backend.watcher.check() // nothing's left to ask about
+    assert.equal(happened.length, 3)
+    await backend.dispose()
 })
 
 test('"View contents" opens a window for a real package version only', async () => {

@@ -11,19 +11,30 @@
  * they close it themselves. BEE2 is never closed without asking.
  * A BEE2 from another folder than BeePM's (or before BeePM knows one) is asked about first:
  * "Use this BEE2" switches BeePM to it; otherwise it's left alone, not checked or closed.
+ * When BeePM's BEE2 closes, its log says if a package broke it (it crashed, or couldn't load
+ * packages): "Remove it" deletes that package and opens BEE2 again, or "Not now".
+ * BEE2 can crash and leave its process running, without a window: that's BEE2 closed, not open.
+ * What's left like that is ended once BEE2 opens again, or before its files are changed. If BeePM
+ * didn't see that BEE2 run (it crashed right away, or before BeePM started), what broke it is
+ * offered the same way.
  * Kept free of Electron:
- *   isBee2Running() (any BEE2), isLocked() (BeePM's BEE2 is running, so its files are open;
- *   optional, else isBee2Running), whichBee2() -> { other, current, ignored } (optional: the
- *   folder of a launched BEE2 that isn't BeePM's), useBee2(folder), ignoreBee2(folder),
- *   findBee2() -> BeePM's BEE2's program file or null, askBee2ToClose() -> whether it was
- *   asked, openBee2(file),
+ *   isBee2Running() (any BEE2, not what's left of one that crashed), isLocked() (BeePM's BEE2
+ *   is running, so its files are open; optional, else isBee2Running), whichBee2() ->
+ *   { other, current, ignored } (optional: the folder of a launched BEE2 that isn't BeePM's),
+ *   useBee2(folder), ignoreBee2(folder), findBee2() -> BeePM's BEE2's program file or null,
+ *   askBee2ToClose() -> whether it was asked, openBee2(file),
  *   review() -> { duplicates: { count, remove: [files] } | null, onBeepm: [{ id, name, package }],
  *                 updates: [{ name, from, to }], reviewId? },
  *   ask(question) -> the answer; question.kind: "duplicates" ("delete" | "choose" | "later"),
  *     "adopt" ("use" | "keep" | "choose" | "later"), "update" ("update" | "later" | "never"),
  *     "close" ("now" | "later"), "use-bee2" ("use" | "later" | "never"),
+ *     "broken" ({ name, message }: "remove" | "later"),
  *   choose(found) (a window to choose in, for what review() found), keepOwn(ids), ignore(name),
  *   apply({ remove, adopt, update }), notify(text), log,
+ *   brokenPackages({ since }) (optional) -> [{ name, files, message }]: what broke the BEE2 that
+ *   was running then (ms), from the log of its run,
+ *   leftoverBee2() (optional) -> [{ pid, program, started, leftover }]: what's left of BeePM's
+ *   BEE2 after it crashed (leftover: when its run ended), endLeftovers() (optional) ends it,
  *   whenClosed() (optional: BEE2 was just closed), sleep(ms) (optional)
  */
 
@@ -37,7 +48,13 @@ const merge = (a, b) => ({
 
 export function createUpdateWatcher(
     deps,
-    { everyMs = 5000, graceMs = 30000, closeWaitMs = 2 * 60 * 1000 } = {},
+    {
+        everyMs = 5000,
+        graceMs = 30000,
+        closeWaitMs = 2 * 60 * 1000,
+        settleMs = 1000,
+        reopenWithinMs = 2 * 60 * 1000,
+    } = {},
 ) {
     const sleep = deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)))
     const isLocked = deps.isLocked ?? deps.isBee2Running
@@ -49,6 +66,11 @@ export function createUpdateWatcher(
     let offering = null // the offer in progress, if any
     let waiting = noWork() // to do once the user closes BEE2
     let installing = null // doing it
+    // The BEE2 running now: { program (to open it again; null if it isn't BeePM's), since }
+    let ours = null
+    // What's left of BEE2s that crashed, already asked about ("<pid>:<started>")
+    const handled = new Set()
+    const leftoverKey = (proc) => `${proc.pid}:${proc.started}`
 
     /**
      * Looks at BEE2's packages and asks about them now (BEE2 just opened: `launched`, or
@@ -146,11 +168,7 @@ export function createUpdateWatcher(
                 try {
                     await install(work)
                 } finally {
-                    if (program) {
-                        deps.openBee2(program)
-                        wasRunning = true
-                        quietUntil = Date.now() + graceMs
-                    }
+                    if (program) reopen(program)
                 }
                 return work
             }
@@ -160,6 +178,31 @@ export function createUpdateWatcher(
         waiting = merge(waiting, work)
         deps.log.info("Waiting for BEE2 to close")
         return work
+    }
+
+    /** BeePM opened BEE2 (again): what's looked at when it closes. */
+    function reopen(program) {
+        deps.openBee2(program)
+        wasRunning = true
+        quietUntil = Date.now() + graceMs
+        ours = { program, since: Date.now() }
+    }
+
+    /** BEE2 just closed: if a package broke it, removing it (and opening BEE2 again) is offered. */
+    async function offerRemoval(run) {
+        const broken = await deps.brokenPackages({ since: run.since }).catch((err) => {
+            deps.log.warn(`Couldn't read BEE2's log: ${err.message}`)
+            return []
+        })
+        const remove = []
+        for (const pkg of broken) {
+            const answer = await deps.ask({ kind: "broken", name: pkg.name, message: pkg.message })
+            deps.log.info(`${pkg.name} broke BEE2 (${pkg.message}): ${answer}`)
+            if (answer === "remove") remove.push(...pkg.files)
+        }
+        if (!remove.length) return
+        await install({ ...noWork(), remove })
+        if (run.program) reopen(run.program)
     }
 
     async function check() {
@@ -180,16 +223,58 @@ export function createUpdateWatcher(
                 installing = null
             }
         }
-        if (opened && Date.now() >= quietUntil) {
-            deps.log.info("BEE2 opened: looking at its packages")
-            await offer({ launched: true })
+        if (closed) {
+            const run = ours
+            ours = null
+            if (run && deps.brokenPackages) {
+                // What's left of it if it crashed is this run's: not asked about again below
+                for (const proc of await leftovers()) handled.add(leftoverKey(proc))
+                await offerRemoval(run)
+            }
+        } else if (!running && deps.brokenPackages) {
+            // BEE2 crashed without BeePM seeing it run (right away, or before BeePM started), and
+            // left its process behind
+            const left = (await leftovers()).filter((proc) => !handled.has(leftoverKey(proc)))
+            for (const proc of left) handled.add(leftoverKey(proc))
+            if (left.length) {
+                deps.log.info("BEE2 crashed and was left running: looking at its log")
+                // It's opened again (after removing what broke it) only if that was just now
+                const recent =
+                    Date.now() - Math.max(...left.map((p) => p.leftover)) < reopenWithinMs
+                // From the latest run's log (what broke one before may be gone by now)
+                await offerRemoval({
+                    program: recent ? left[0].program : null,
+                    since: Math.max(...left.map((p) => p.started)),
+                })
+            }
         }
+        if (opened) {
+            // What's left of BEE2s that crashed before holds its files open
+            await deps.endLeftovers?.().catch((err) => deps.log.warn(err.message))
+            ours = deps.brokenPackages
+                ? { program: await deps.findBee2().catch(() => null), since: Date.now() }
+                : null
+            if (Date.now() >= quietUntil) {
+                deps.log.info("BEE2 opened: looking at its packages")
+                await offer({ launched: true })
+            }
+        }
+    }
+
+    /** What's left of BeePM's BEE2 after it crashed (none without leftoverBee2). */
+    async function leftovers() {
+        if (!deps.leftoverBee2) return []
+        return deps.leftoverBee2().catch((err) => {
+            deps.log.warn(`Couldn't look for what's left of BEE2: ${err.message}`)
+            return []
+        })
     }
 
     // One check at a time: answering the questions, or installing, can take a while. A poke
     // during one checks again after it, unless that one saw BEE2 open.
     let checking = false
     let poked = false
+    let settling = null // a check once BEE2's log is quiet
     async function run() {
         if (checking) return
         checking = true
@@ -208,9 +293,19 @@ export function createUpdateWatcher(
     return {
         offer,
         check,
-        /** BEE2 may have just opened (e.g. it wrote its log): checks now, not at the next look. */
+        /**
+         * BEE2 wrote its log: it may have just opened, so this checks now, not at the next look.
+         * When it's open, it may have just crashed (it writes that last): this checks once its
+         * log is quiet for a moment.
+         */
         poke() {
-            if (!timer || wasRunning) return
+            if (!timer) return
+            if (wasRunning) {
+                clearTimeout(settling)
+                settling = setTimeout(run, settleMs)
+                settling.unref?.()
+                return
+            }
             poked = true
             run()
         },
@@ -222,6 +317,7 @@ export function createUpdateWatcher(
         },
         stop() {
             clearInterval(timer)
+            clearTimeout(settling)
             timer = null
         },
     }

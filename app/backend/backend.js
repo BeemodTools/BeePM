@@ -9,15 +9,19 @@ import {
     findBee2Folder,
     checkBee2Packages,
     createClientContext,
+    endLeftoverBee2,
     findBee2Program,
     findBee2Programs,
+    findLeftoverBee2,
     hasHook,
     isBee2Running,
     leaveHook,
     outdated,
     planInstall,
+    readBee2Problems,
     RegistryError,
     removePackageFiles,
+    scanBee2,
     setBee2Folder,
 } from "@beepm/core/client"
 import semver from "semver"
@@ -58,7 +62,8 @@ const quietLog = {
  *   onSettingsChanged(settings)                    running in the background (updateWatcher.js)
  *   bee2Process                                    stand-ins for { isRunning(folder?),
  *                                                  programs(), findProgram(folder?),
- *                                                  askToClose(folder?) } (tests)
+ *                                                  askToClose(folder?), leftovers(folder?),
+ *                                                  endLeftovers(folder?) } (tests)
  *
  * invoke(channel, ...args) never throws: it resolves to { ok: true, ...data } or
  * { ok: false, error, code?, problems?, ... }. What changes something (installs, publishing,
@@ -97,6 +102,8 @@ export async function createBackend(deps = {}) {
         programs: findBee2Programs,
         findProgram: findBee2Program,
         askToClose: askBee2ToClose,
+        leftovers: findLeftoverBee2,
+        endLeftovers: endLeftoverBee2,
         ...deps.bee2Process,
     }
     const samePath = (a, b) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase()
@@ -166,6 +173,24 @@ export async function createBackend(deps = {}) {
         /** BeePM's BEE2 is running, so its package files are open (any BEE2 without a folder). */
         isLocked() {
             return bee2Process.isRunning(ctx.paths.bee2Dir)
+        },
+
+        /**
+         * Ends what's left of BeePM's BEE2 after it crashed (see core's listBee2Processes),
+         * which holds its package files open. Resolves to how many processes were ended.
+         */
+        async endLeftoverBee2() {
+            if (!ctx.paths.bee2Dir) return 0
+            const ended = await bee2Process.endLeftovers(ctx.paths.bee2Dir).catch((err) => {
+                log.warn(`Couldn't end what's left of BEE2: ${err.message}`)
+                return 0
+            })
+            if (ended) {
+                log.info(
+                    `Ended ${ended === 1 ? "a BEE2 process" : `${ended} BEE2 processes`} left after it crashed`,
+                )
+            }
+            return ended
         },
 
         /**
@@ -260,6 +285,7 @@ export async function createBackend(deps = {}) {
             const title = parts.join(", ").replace(/^./, (c) => c.toUpperCase())
             return this.lock(() =>
                 step(title || "Nothing to change", async () => {
+                    await this.endLeftoverBee2() // it has the files open
                     const result = { removed: [], uninstalled: [], installed: [], replaced: [] }
                     if (remove.length) {
                         Object.assign(
@@ -387,6 +413,10 @@ export async function createBackend(deps = {}) {
             return program
         },
         askBee2ToClose: () => bee2Process.askToClose(ctx.paths.bee2Dir),
+        // What's left of BeePM's BEE2 after it crashed, and ending it
+        leftoverBee2: async () =>
+            ctx.paths.bee2Dir ? bee2Process.leftovers(ctx.paths.bee2Dir) : [],
+        endLeftovers: () => shared.endLeftoverBee2(),
         openBee2: shared.deps.openProgram,
         ask: deps.ask ?? (async () => "later"),
         // A window to choose in, showing the check the question came from
@@ -425,6 +455,19 @@ export async function createBackend(deps = {}) {
             })
         },
         apply: (work) => shared.applyWork(work),
+        // What broke BeePM's BEE2 (its log), and the files of those packages in its folder
+        async brokenPackages({ since }) {
+            if (!ctx.paths.bee2Dir) return []
+            const problems = await readBee2Problems(ctx.paths.bee2Dir, { since })
+            if (!problems.length) return []
+            const found = await scanBee2(ctx.paths)
+            return problems.flatMap(({ packageId, message }) => {
+                const copies = found.filter((pkg) => pkg.id === packageId)
+                if (!copies.length) return []
+                const name = copies.find((pkg) => pkg.name)?.name ?? path.basename(copies[0].path)
+                return [{ name, files: copies.map((pkg) => pkg.path), message }]
+            })
+        },
         // BEE2 just closed: a hook it kept from being undone can be now
         whenClosed: async () => {
             if (shared.hookState) await shared.leaveHook()

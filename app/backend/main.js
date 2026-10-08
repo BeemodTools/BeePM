@@ -144,6 +144,7 @@ function balloon(content, title = "BeePM") {
  *   duplicates  "Duplicate packages in BEE2": "delete" (keeps the newest) or "choose"
  *   adopt       "Use BeePM's <package>?": "use", "keep" or (several) "choose"
  *   close       "Close BEE2 to finish?": "now" ("later": once the user closes it)
+ *   broken      "BEE2 couldn't load <package>" (its log says why): "remove"
  *   use-bee2    "Use this BEE2 with BeePM?" (a BEE2 from another folder): "use" or "never"
  */
 function ask(question) {
@@ -173,6 +174,12 @@ function ask(question) {
         }
         case "close":
             return showToast({ toast: "close" }, ["now"], minutes(2))
+        case "broken":
+            return showToast(
+                { toast: "broken", name: question.name, text: question.message },
+                ["remove"],
+                minutes(2),
+            )
         case "use-bee2":
             return showToast(
                 {
@@ -286,8 +293,9 @@ function showContents(name, version, title) {
 
 /**
  * A question in a small window in the bottom-right corner, on top of BEE2 without taking its
- * focus (src/components/UpdateToast.jsx, answering through "toast:answer"). Resolves to one of
- * `answers`, or "later" when it's closed or left for `timeoutMs`.
+ * focus, with a chime so it's noticed (src/components/UpdateToast.jsx, answering through
+ * "toast:answer"). Resolves to one of `answers`, or "later" when it's closed or left for
+ * `timeoutMs`.
  */
 function showToast(query, answers, timeoutMs) {
     const width = 400
@@ -307,7 +315,8 @@ function showToast(query, answers, timeoutMs) {
         skipTaskbar: true,
         show: false,
         backgroundColor: "#262829",
-        webPreferences: webPreferences(),
+        // It chimes when it appears, which nobody clicked to start
+        webPreferences: { ...webPreferences(), autoplayPolicy: "no-user-gesture-required" },
     })
     toast.webContents.setWindowOpenHandler(() => ({ action: "deny" }))
     toast.webContents.on("will-navigate", (event) => event.preventDefault())
