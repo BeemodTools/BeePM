@@ -46,7 +46,7 @@ Useful environment variables for the client: `BEEPM_REGISTRY` (registry URL), `B
 ## Using the CLI
 
 ```bash
-beepm setup                       # pick your BEE2 version, get BEE2's own packages, hook BEE2
+beepm bee2 "C:\Games\BEE2"        # where BEE2 is: packages go in its packages folder
 beepm login                       # Discord or GitHub, in your browser
 beepm search items
 beepm install @areng14/arengitems # or just: beepm install arengitems

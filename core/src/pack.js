@@ -158,9 +158,13 @@ async function readEntryText(zipfile, entry, maxBytes, label) {
 /**
  * Lists a .bee_pack's files without extracting it, and reads info.txt and
  * bee-package.json from its root (matched case-insensitively). Refuses zip bombs and other
- * unsafe zips (see entryProblem) before unpacking anything.
+ * unsafe zips (see entryProblem) before unpacking anything. maxInfoBytes: how big info.txt may
+ * be (BEE2's own packages can have bigger ones than BeePM accepts for publishing).
  */
-export async function readPack(filePath, { maxUnpackedBytes = MAX_UNPACKED_BYTES } = {}) {
+export async function readPack(
+    filePath,
+    { maxUnpackedBytes = MAX_UNPACKED_BYTES, maxInfoBytes = MAX_INFO_BYTES } = {},
+) {
     let zipfile
     try {
         zipfile = await yauzl.openPromise(filePath, { lazyEntries: true, autoClose: false })
@@ -208,7 +212,7 @@ export async function readPack(filePath, { maxUnpackedBytes = MAX_UNPACKED_BYTES
         }
         if (overlaps(extents)) throw new PackError(["it looks like a zip bomb: its files overlap"])
         const infoText = infoEntry
-            ? await readEntryText(zipfile, infoEntry, MAX_INFO_BYTES, "info.txt")
+            ? await readEntryText(zipfile, infoEntry, maxInfoBytes, "info.txt")
             : null
         const manifestText = manifestEntry
             ? await readEntryText(zipfile, manifestEntry, MAX_MANIFEST_BYTES, MANIFEST_FILE)

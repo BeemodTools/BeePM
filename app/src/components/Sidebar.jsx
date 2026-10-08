@@ -17,7 +17,6 @@ import CloudOffIcon from "@mui/icons-material/CloudOff"
 import ExploreIcon from "@mui/icons-material/Explore"
 import InventoryIcon from "@mui/icons-material/Inventory"
 import LoginIcon from "@mui/icons-material/Login"
-import MoveToInboxIcon from "@mui/icons-material/MoveToInbox"
 import PublishIcon from "@mui/icons-material/Publish"
 import SettingsIcon from "@mui/icons-material/Settings"
 import { useApp } from "../state/context.js"
@@ -116,21 +115,22 @@ function AccountChip({ onOpenSettings }) {
     )
 }
 
-function HookChip({ onOpenSettings }) {
+/** BEE2: its version once BeePM knows where it is, else a reminder to choose its folder. */
+function Bee2Chip({ onOpenSettings }) {
     const { bee2 } = useApp()
-    const hooked = Boolean(bee2?.hooked)
+    const ready = Boolean(bee2?.dir && bee2.found !== false)
     const label = !bee2
         ? "Checking BEE2…"
-        : hooked
-          ? "Hooked"
-          : bee2.configFound === false
+        : ready
+          ? `BEE2${bee2.version ? ` ${bee2.version}` : ""}`
+          : bee2.dir
             ? "BEE2 not found"
-            : "Not hooked"
+            : "Choose BEE2"
     const tooltip = !bee2
         ? ""
-        : hooked
-          ? `BEE2${bee2.bee2?.version ? ` ${bee2.bee2.version}` : ""} loads packages from BeePM`
-          : (bee2.error ?? "BEE2 doesn't load packages from BeePM yet. Set it up in Settings.")
+        : ready
+          ? bee2.dir
+          : (bee2.error ?? "BeePM doesn't know where BEE2 is. Choose its folder in Settings.")
     return (
         <Tooltip title={tooltip} placement="right">
             <Chip
@@ -140,9 +140,9 @@ function HookChip({ onOpenSettings }) {
                 sx={{
                     width: "100%",
                     fontWeight: 500,
-                    backgroundColor: !bee2 ? "#3a3a3a" : hooked ? "#1db34f" : "#d32f2f",
+                    backgroundColor: !bee2 ? "#3a3a3a" : ready ? "#1db34f" : "#d32f2f",
                     color: "#fff",
-                    "&:hover": { backgroundColor: !bee2 ? "#444" : hooked ? "#22c55a" : "#e53935" },
+                    "&:hover": { backgroundColor: !bee2 ? "#444" : ready ? "#22c55a" : "#e53935" },
                 }}
             />
         </Tooltip>
@@ -150,8 +150,8 @@ function HookChip({ onOpenSettings }) {
 }
 
 export default function Sidebar({ view, onNavigate }) {
-    const { installed, local } = useApp()
-    const installedCount = Object.keys(installed).length + Object.keys(local).length
+    const { installed } = useApp()
+    const installedCount = Object.keys(installed).length
     const openSettings = () => onNavigate("settings")
     return (
         <Box
@@ -195,12 +195,6 @@ export default function Sidebar({ view, onNavigate }) {
                     onClick={() => onNavigate("installed")}
                 />
                 <NavItem
-                    icon={MoveToInboxIcon}
-                    label="Import"
-                    selected={view === "import"}
-                    onClick={() => onNavigate("import")}
-                />
-                <NavItem
                     icon={PublishIcon}
                     label="Publish"
                     selected={view === "publish"}
@@ -217,7 +211,7 @@ export default function Sidebar({ view, onNavigate }) {
                 />
                 <Box sx={{ px: 1, pb: 2, display: "flex", flexDirection: "column", gap: 1.25 }}>
                     <AccountChip onOpenSettings={openSettings} />
-                    <HookChip onOpenSettings={openSettings} />
+                    <Bee2Chip onOpenSettings={openSettings} />
                 </Box>
             </Box>
         </Box>

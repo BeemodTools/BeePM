@@ -1,29 +1,15 @@
 import { randomUUID } from "node:crypto"
-import { access, stat } from "node:fs/promises"
-import path from "node:path"
+import { access } from "node:fs/promises"
 import {
     adoptLegacyInstalls,
     applyPlan,
     findInstalled,
-    findPackages,
-    importLocal,
-    loadConfig,
     loadInstalled,
     outdated,
-    planImport,
     planInstall,
-    removeLocal,
     uninstall,
 } from "@beepm/core/client"
-import {
-    AppError,
-    fileSize,
-    isLocalPath,
-    listOf,
-    optionalText,
-    requireText,
-    throttle,
-} from "../util.js"
+import { AppError, fileSize, listOf, throttle } from "../util.js"
 
 const MAX_PLANS = 20
 
@@ -45,38 +31,20 @@ function describeStep({ name, from, to, change, size }) {
     return `${versions}, ${fileSize(size)}`
 }
 
-/** What a package to import is called: its info.txt name, or its file or folder name. */
-const importName = (item) => item.name ?? path.basename(item.path)
-
-const isFolder = (dir) =>
-    stat(dir).then(
-        (info) => info.isDirectory(),
-        () => false,
-    )
-const normalize = (p) =>
-    process.platform === "win32" ? path.resolve(p).toLowerCase() : path.resolve(p)
-const samePath = (a, b) => normalize(a) === normalize(b)
-
 /**
  * Install, update and uninstall. Installing is two steps so the window can show the plan first:
  * packages:plan returns the steps and a planId, packages:apply(planId) downloads them and sends
- * "packages:progress" events. Importing from this PC works the same way (packages:import-scan,
- * then packages:import-apply; see core's local.js), with "packages:import-progress" events:
- * { phase: "read" | "check" | "copy" | "download", done, total, name?, received?, size? }.
+ * "packages:progress" events. Packages go in BeePM's folder in BEE2's packages folder; the
+ * user's own copy of one goes to BeePM's backups (`replaced`).
  */
 export function packageHandlers(shared) {
     const { ctx, deps, log, step } = shared
     const plans = new Map() // planId -> plan, until it's applied or discarded
-    const imports = new Map() // importId -> planImport's items, until they're imported
-    const importProgress = () =>
-        throttle((progress) => deps.send("packages:import-progress", progress), {
-            key: (p) => `${p.phase}:${p.name ?? ""}`,
-        })
 
     return {
         "packages:installed": async () => {
             const installed = await loadInstalled(ctx.paths)
-            return { packages: installed.packages, local: installed.local }
+            return { packages: installed.packages }
         },
 
         // options: { update: pick the newest allowed versions (no specs = everything), force: reinstall }
@@ -117,8 +85,8 @@ export function packageHandlers(shared) {
                         for (const name of result.removed) {
                             log.info(`Removed ${name}: nothing needs it anymore`)
                         }
-                        for (const name of result.replacedLocal) {
-                            log.info(`Replaced the local copy of ${name}`)
+                        for (const { name, files } of result.replaced) {
+                            log.info(`${name} replaced ${files.join(", ")} (moved to backups)`)
                         }
                         return {
                             installed: result.installed.map(
@@ -131,7 +99,7 @@ export function packageHandlers(shared) {
                                 }),
                             ),
                             removed: result.removed,
-                            replacedLocal: result.replacedLocal,
+                            replaced: result.replaced,
                             warnings: plan.warnings,
                         }
                     } finally {
@@ -179,143 +147,6 @@ export function packageHandlers(shared) {
             }),
 
         "packages:outdated": async () => ({ rows: await outdated(ctx) }),
-
-        // kind: "file" (a .bee_pack or .zip) or "folder" (a package folder, or a folder of them)
-        "packages:pick-import": async (kind) => {
-            const result = await deps.showOpenDialog(
-                kind === "folder"
-                    ? { title: "Choose a folder", properties: ["openDirectory"] }
-                    : {
-                          title: "Choose a package",
-                          properties: ["openFile"],
-                          filters: [{ name: "BEE2 packages", extensions: ["bee_pack", "zip"] }],
-                      },
-            )
-            if (result.canceled || !result.filePaths?.length) return { canceled: true }
-            return { canceled: false, path: result.filePaths[0] }
-        },
-
-        /**
-         * What importing a file or folder from this PC would do: { importId, offline, items:
-         * [{ name, file, action: "beepm" | "local" | "skip", package?, reason?, replaces }] }.
-         */
-        "packages:import-scan": async (input) => {
-            const text = optionalText(input)
-            if (!text) throw new AppError("Choose a package or a folder.")
-            const target = path.resolve(text)
-            if (!isLocalPath(target)) throw new AppError("Choose a file or folder on this PC.")
-            const report = importProgress()
-            let scanned
-            try {
-                const found = await findPackages(target, {
-                    onProgress: (p) => report({ phase: "read", ...p }),
-                })
-                scanned = await planImport(ctx, found, {
-                    onProgress: (p) => report({ phase: "check", ...p }),
-                })
-            } finally {
-                report.flush()
-            }
-            const { items, offline } = scanned
-            if (!items.length) throw new AppError("There are no packages there.")
-            const count = (action) => items.filter((item) => item.action === action).length
-            log.info(
-                `Import from ${target}: ${count("local")} local, ${count("beepm")} from BeePM, ${count("skip")} skipped${offline ? " (BeePM couldn't be reached)" : ""}`,
-            )
-            const importId = randomUUID()
-            imports.set(importId, items)
-            while (imports.size > MAX_PLANS) imports.delete(imports.keys().next().value)
-            return {
-                importId,
-                offline,
-                items: items.map((item) => ({
-                    name: importName(item),
-                    // Where it is in the folder chosen (packages can be in folders inside it)
-                    file: path.relative(target, item.path) || path.basename(item.path),
-                    action: item.action,
-                    package: item.package ?? null,
-                    reason: item.reason ?? null,
-                    replaces: Boolean(item.replaces),
-                })),
-            }
-        },
-
-        // Copies the local ones in, and installs the ones on BeePM from there
-        "packages:import-apply": (importId) =>
-            shared.lock(async () => {
-                const items = imports.get(importId)
-                if (!items) throw new AppError("That import is out of date. Try again.")
-                imports.delete(importId)
-                const local = items.filter((item) => item.action === "local")
-                const fromBeepm = items.filter((i) => i.action === "beepm").map((i) => i.package)
-                const names = [...local.map(importName), ...fromBeepm]
-                if (!names.length) throw new AppError("There's nothing to import.")
-                return step(`Importing ${listOf(names, "packages")}`, async () => {
-                    const report = importProgress()
-                    try {
-                        for (const [index, item] of local.entries()) {
-                            const name = importName(item)
-                            report({ phase: "copy", done: index, total: local.length, name })
-                            await importLocal(ctx.paths, item)
-                            log.info(`${name}: copied in from ${item.path}`)
-                        }
-                        let installed = []
-                        if (fromBeepm.length) {
-                            const plan = await planInstall(ctx, fromBeepm)
-                            for (const s of plan.steps) log.info(`${describeStep(s)}, from BeePM`)
-                            const result = await applyPlan(ctx, plan, {
-                                onProgress: (p) =>
-                                    report({
-                                        phase: "download",
-                                        done: p.index,
-                                        total: p.count,
-                                        name: p.name,
-                                        received: p.received,
-                                        size: p.total,
-                                    }),
-                            })
-                            installed = result.installed.map((s) => `${s.name}@${s.to}`)
-                        }
-                        return { imported: local.map(importName), installed }
-                    } finally {
-                        report.flush()
-                    }
-                })
-            }),
-
-        /**
-         * The folders BEE2 loaded packages from before BeePM hooked it, if they're still there:
-         * { hooked, folders }. BEE2 doesn't load them while it's hooked, so they're offered for
-         * importing. A relative one is in BEE2's own folder, known once BeePM has seen BEE2 run.
-         */
-        "packages:import-sources": async () => {
-            const config = await loadConfig(ctx.paths)
-            if (!config.hook) return { hooked: false, folders: [] }
-            // No setting means BEE2's default: the packages folder next to BEE2.exe
-            const setting = config.hook.originalPackageDir || "packages/"
-            const program = await shared.bee2Program()
-            const folders = []
-            for (const part of String(setting).split(";")) {
-                const dir = part.trim()
-                if (!dir) continue
-                const folder = path.isAbsolute(dir)
-                    ? dir
-                    : program && path.resolve(path.dirname(program), dir)
-                if (!folder || samePath(folder, ctx.paths.packages)) continue
-                if (await isFolder(folder)) folders.push(path.resolve(folder))
-            }
-            return { hooked: true, folders }
-        },
-
-        "packages:remove-local": (beeId) =>
-            shared.lock(async () => {
-                const id = requireText(beeId, "Say which package.")
-                const { local } = await loadInstalled(ctx.paths)
-                return step(`Removing ${local[id]?.name ?? "a local package"}`, async () => {
-                    await removeLocal(ctx.paths, id)
-                    return {}
-                })
-            }),
     }
 }
 
@@ -324,6 +155,7 @@ export function packageHandlers(shared) {
  * and then retires the old list, so it only runs while the registry can be reached.
  */
 export async function adoptOldInstalls({ ctx, deps, lock, log, step }) {
+    if (!ctx.paths.packages) return // It waits for BeePM to know where BEE2 is
     const exists = await access(ctx.paths.legacyInstalled).then(
         () => true,
         () => false,

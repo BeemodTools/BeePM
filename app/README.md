@@ -8,7 +8,7 @@ backend/preload.cjs  window.beepm for the page (sandboxed, so CommonJS)
 backend/backend.js   every IPC handler, built on @beepm/core/client (no Electron imports)
 backend/handlers/    app, auth, registry, packages, bee2, publish, manage
 backend/logger.js    the log file (BeePEE's logger: each change is a step, drawn as a tree)
-backend/updateWatcher.js  in the background: asks about updates when BEE2 opens
+backend/updateWatcher.js  in the background: the BEE2 check and updates when BEE2 opens
 src/                 the React UI
 src/devBridge.js     a fake window.beepm with sample data, used in a normal browser
 ```
@@ -17,9 +17,10 @@ src/devBridge.js     a fake window.beepm with sample data, used in a normal brow
 
 - `npm run dev`: Vite on port 5167 plus Electron. Closing the app stops both.
 - `npx vite`, then open http://localhost:5167 in a browser: the UI with the dev bridge's sample
-  data (nothing is installed or published). Add `?loggedout`, `?admin`, `?unhooked` or
-  `?nobee2folder` to the URL. `?toast=update` and `?toast=close` draw the background
-  questions (400×150).
+  data (nothing is installed or published). Add `?loggedout`, `?admin`, `?nobee2` (BeePM
+  doesn't know where BEE2 is), `?bee2open` or `?clean` (the BEE2 check finds nothing) to the
+  URL. `?toast=update`, `close`, `duplicates&count=2` and `adopt&count=1&name=X` draw the
+  corner questions (400×150).
 - `npm run lint`, `npm run format` (Prettier, using the repo's config), and `npm test`.
 - Running in the background is off in development unless it's turned on in Settings; then
   closing the window keeps BeePM in the tray (quit it there), and `npm run dev` keeps going.

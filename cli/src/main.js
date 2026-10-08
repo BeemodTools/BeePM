@@ -44,7 +44,11 @@ export async function run(argv = process.argv) {
     } catch (err) {
         if (err instanceof CommanderError) return err.exitCode
         if (EXPECTED.some((type) => err instanceof type)) {
-            fail(err.message)
+            fail(
+                err.code === "bee2_not_set"
+                    ? `${err.message} Run: beepm bee2 <the folder BEE2.exe is in>`
+                    : err.message,
+            )
             if (err instanceof RegistryError && err.details?.problems) {
                 for (const problem of err.details.problems) console.error(`  - ${problem}`)
             }

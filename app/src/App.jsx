@@ -6,12 +6,12 @@ import ConfirmDialog from "./components/ConfirmDialog.jsx"
 import InstallDialog from "./components/InstallDialog.jsx"
 import LoginDialog from "./components/LoginDialog.jsx"
 import PackageDetails from "./components/PackageDetails.jsx"
+import ReviewDialog from "./components/ReviewDialog.jsx"
 import Sidebar from "./components/Sidebar.jsx"
 import Toasts from "./components/Toasts.jsx"
 import AppProvider from "./state/AppProvider.jsx"
 import { useApp } from "./state/context.js"
 import BrowseView from "./views/BrowseView.jsx"
-import ImportView from "./views/ImportView.jsx"
 import InstalledView from "./views/InstalledView.jsx"
 import PublishView from "./views/PublishView.jsx"
 import SettingsView from "./views/SettingsView.jsx"
@@ -19,7 +19,6 @@ import SettingsView from "./views/SettingsView.jsx"
 const TITLES = {
     browse: "Browse Packages",
     installed: "Installed Packages",
-    import: "Import Packages",
     publish: "Publish Package",
     settings: "Settings",
 }
@@ -73,8 +72,6 @@ function Shell() {
                 )
             case "installed":
                 return <InstalledView query={search.installed} onNavigate={navigate} />
-            case "import":
-                return <ImportView onNavigate={navigate} />
             case "publish":
                 return <PublishView />
             default:
@@ -163,6 +160,7 @@ function Shell() {
             <InstallDialog />
             <PackageDetails />
             <ConfirmDialog />
+            <ReviewDialog />
             <Toasts />
         </Box>
     )

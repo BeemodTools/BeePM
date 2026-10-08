@@ -31,6 +31,7 @@ const isDev = !app.isPackaged
 const QUEUED_EVENTS = new Set([
     "app:protocol",
     "app:notice",
+    "app:review",
     "auth:changed",
     "auth:login-result",
     "packages:changed",
@@ -138,14 +139,61 @@ async function hintTray() {
     await backend.invoke("app:update-settings", { trayHintShown: true })
 }
 
-/** "Update <package>?": "update", "later" or "never" (closing it, or leaving it, is "later"). */
-function askUpdate({ name, from, to }) {
-    return showToast({ toast: "update", name, from, to }, ["update", "never"], 60 * 1000)
+/**
+ * The background's questions (updateWatcher.js), each in a corner window; closing one, or
+ * leaving it, is "later":
+ *   update      "Update <package>?": "update" or "never"
+ *   duplicates  "Duplicate packages in BEE2": "delete" (keeps the newest) or "choose"
+ *   adopt       "Use BeePM's <package>?": "use", "keep" or (several) "choose"
+ *   close       "Close BEE2 to finish?": "now" ("later": once the user closes it)
+ *   use-bee2    "Use this BEE2 with BeePM?" (a BEE2 from another folder): "use" or "never"
+ */
+function ask(question) {
+    const minutes = (n) => n * 60 * 1000
+    switch (question.kind) {
+        case "update": {
+            const { name, from, to } = question
+            return showToast({ toast: "update", name, from, to }, ["update", "never"], minutes(1))
+        }
+        case "duplicates":
+            return showToast(
+                { toast: "duplicates", count: question.count },
+                ["delete", "choose"],
+                minutes(2),
+            )
+        case "adopt": {
+            const several = question.packages.length > 1
+            return showToast(
+                {
+                    toast: "adopt",
+                    count: question.packages.length,
+                    name: question.packages[0].name,
+                },
+                several ? ["use", "keep", "choose"] : ["use", "keep"],
+                minutes(2),
+            )
+        }
+        case "close":
+            return showToast({ toast: "close" }, ["now"], minutes(2))
+        case "use-bee2":
+            return showToast(
+                {
+                    toast: "use-bee2",
+                    folder: question.folder,
+                    switching: question.current ? "1" : "",
+                },
+                ["use", "never"],
+                minutes(2),
+            )
+        default:
+            return Promise.resolve("later")
+    }
 }
 
-/** "Close BEE2 to update?": "now", or "later" to update once the user closes it. */
-function askClose() {
-    return showToast({ toast: "close" }, ["now"], 2 * 60 * 1000)
+/** BeePM's window, on the BEE2 check: duplicates and packages on BeePM to choose about. */
+function showReview() {
+    showWindow()
+    send("app:review", {})
 }
 
 /**
@@ -387,9 +435,10 @@ if (!app.requestSingleInstanceLock()) {
                     : dialog.showOpenDialog(options),
             send,
             log: logger,
-            askUpdate,
-            askClose,
+            ask,
+            showReview,
             notify: (text) => balloon(text),
+            trash: (file) => shell.trashItem(file),
             openProgram,
             backgroundDefault: app.isPackaged,
             onSettingsChanged: applyBackground,

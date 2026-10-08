@@ -158,11 +158,10 @@ export function register(program) {
             const where = isPack ? path.basename(target) : path.join(target, MANIFEST_FILE)
 
             const config = await loadConfig(ctx.paths)
-            const { manifest, existing } = await suggestManifest(
-                { api: ctx.api, basePackages: config.bee2?.basePackages },
-                target,
-                { handle: ctx.login?.user?.handle ?? null, bee2Version: config.bee2?.version },
-            )
+            const { manifest, existing } = await suggestManifest({ api: ctx.api }, target, {
+                handle: ctx.login?.user?.handle ?? null,
+                bee2Version: config.bee2?.version,
+            })
             if (existing && !options.force) {
                 throw new CliError(
                     `${where} already has a bee-package.json (use --force to replace it).`,

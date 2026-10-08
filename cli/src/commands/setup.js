@@ -1,150 +1,61 @@
 import {
-    bee2Status,
-    hookBee2,
-    installBasePackages,
-    listBee2Releases,
+    bee2Info,
+    findBee2Program,
+    isBee2Running,
     loadConfig,
-    refreshBaseIds,
     saveConfig,
-    unhookBee2,
+    setBee2Folder,
 } from "@beepm/core/client"
-import { CliError, getContext } from "../context.js"
-import { ask, color, formatDate, info, ok, progress, table, warn } from "../output.js"
+import path from "node:path"
+import { CliError, getContext, leaveHookIfNeeded } from "../context.js"
+import { color, info, ok, warn } from "../output.js"
 
 export function register(program) {
     program
-        .command("setup")
-        .alias("init")
-        .description("Download BEE2's own packages for your BEE2 version and hook BEE2 to BeePM")
-        .option("--version <version>", "BEE2 version, e.g. 2.4.46.1 (default: ask, or the newest)")
-        .option("--list", "list BEE2 versions and exit")
-        .option("--no-music", "skip BEE2's music packages")
-        .action(async (options) => {
+        .command("bee2 [folder]")
+        .description("Show where BEE2 is, or tell BeePM (the folder BEE2.exe is in)")
+        .action(async (folder) => {
             const ctx = await getContext()
-            const releases = await listBee2Releases({ fetch: ctx.fetch })
-            if (options.list) {
-                return table(
-                    releases.map((r) => [r.version, r.name, formatDate(r.publishedAt)]),
-                    ["VERSION", "NAME", "RELEASED"],
-                )
+            if (folder) {
+                const { dir, version, moved } = await setBee2Folder(ctx, folder)
+                ok(`BEE2: ${dir}${version ? ` (${version})` : ""}`)
+                if (moved) info(`Moved ${moved} of BeePM's packages from the BEE2 before.`)
+                info(color.dim(`Packages go in ${ctx.paths.packages}`))
+                if (!version) info(color.dim("Open BEE2 once so BeePM can tell its version."))
+                await leaveHookIfNeeded(ctx)
+                return
             }
-
-            const config = await loadConfig(ctx.paths)
-            let version = options.version?.replace(/^v/i, "")
-            if (!version) {
+            const bee2 = await bee2Info(ctx)
+            if (!bee2.dir) {
+                const running = (await isBee2Running()) ? await findBee2Program() : null
+                info("BeePM doesn't know where BEE2 is yet.")
                 info(
-                    `Newest BEE2 versions: ${releases
-                        .slice(0, 5)
-                        .map((r) => r.version)
-                        .join(", ")}`,
+                    running
+                        ? `BEE2 is running from there: ${color.cyan(`beepm bee2 "${path.dirname(running)}"`)}`
+                        : `Tell it: ${color.cyan("beepm bee2 <the folder BEE2.exe is in>")}`,
                 )
-                version = (
-                    await ask(
-                        "Which BEE2 version do you use?",
-                        config.bee2?.version || releases[0]?.version,
-                    )
-                ).replace(/^v/i, "")
+                return
             }
-            const release = releases.find((r) => r.version === version)
-            if (!release) warn(`${version} isn't in the list of BEE2 releases; trying anyway.`)
-
-            info(`Getting BEE2's own packages for ${version} (this can take a few minutes)...`)
-            let bar = null
-            let asset = null
-            await installBasePackages(ctx.paths, config, {
-                version,
-                name: release?.name ?? null,
-                includeMusic: options.music,
-                fetch: ctx.fetch,
-                onProgress: (p) => {
-                    if (p.step === "plan") {
-                        info(
-                            color.dim(`Downloading ${p.assets.map((a) => a.name).join(", then ")}`),
-                        )
-                        return
-                    }
-                    if (p.step === "closed-bee2") {
-                        info("Closed BEE2 so its packages can be replaced.")
-                        return
-                    }
-                    if (p.asset !== asset) {
-                        bar?.done()
-                        asset = p.asset
-                        bar = progress(`Downloading ${p.asset}`)
-                    }
-                    if (p.step === "download") bar.update(p.received, p.total)
-                },
-            })
-            bar?.done()
-            ok(
-                `Installed ${config.bee2.basePackages.length} BEE2 packages (${config.bee2.itemsTag})`,
-            )
-
-            const hook = await hookBee2(ctx.paths, ctx.bee2, config)
-            await saveConfig(ctx.paths, config)
-            ok(
-                hook.changed
-                    ? "BEE2 now loads packages from BeePM. Start BEE2 to use them."
-                    : "BEE2 was already hooked to BeePM.",
-            )
-            info(color.dim(`Packages folder: ${ctx.paths.packages}`))
-        })
-
-    program
-        .command("hook")
-        .description("Point BEE2 at BeePM's packages folder")
-        .action(async () => {
-            const ctx = await getContext()
-            const config = await loadConfig(ctx.paths)
-            const result = await hookBee2(ctx.paths, ctx.bee2, config)
-            await saveConfig(ctx.paths, config)
-            if (!config.bee2?.basePackages?.length) {
-                warn(
-                    `BEE2's own packages aren't in BeePM's folder yet. Run ${color.cyan("beepm setup")}.`,
-                )
-            }
-            ok(result.changed ? "Hooked BEE2 to BeePM." : "BEE2 is already hooked to BeePM.")
-            if (result.closedBee2)
-                info("Closed BEE2 so it can't undo this. Start it again to use BeePM's packages.")
-        })
-
-    program
-        .command("unhook")
-        .description("Point BEE2 back at the packages folder it used before")
-        .action(async () => {
-            const ctx = await getContext()
-            const config = await loadConfig(ctx.paths)
-            const result = await unhookBee2(ctx.paths, ctx.bee2, config)
-            await saveConfig(ctx.paths, config)
-            if (!result.changed) return info("BEE2 isn't hooked to BeePM.")
-            ok(
-                result.restored
-                    ? `BEE2 uses ${result.restored} again.`
-                    : "BEE2 uses its default packages folder again.",
-            )
-            if (result.closedBee2)
-                info("Closed BEE2 so it can't undo this. Start it again whenever you like.")
+            info(`Folder:    ${bee2.dir}`)
+            if (!bee2.found) warn("BEE2 isn't in that folder anymore.")
+            info(`Version:   ${bee2.version ?? color.yellow("unknown (open BEE2 once)")}`)
+            info(`Packages:  ${ctx.paths.packages}`)
         })
 
     program
         .command("status")
-        .description("Show BeePM's setup: BEE2 version, hook, registry and login")
+        .description("Show BeePM's setup: BEE2, registry and login")
         .action(async () => {
             const ctx = await getContext()
-            const config = await loadConfig(ctx.paths)
-            if (await refreshBaseIds(ctx.paths, config)) await saveConfig(ctx.paths, config)
-            const status = await bee2Status(ctx.paths, ctx.bee2)
+            const bee2 = await bee2Info(ctx)
             info(`Registry:  ${ctx.registry}`)
             info(
                 `Login:     ${ctx.login?.user ? `@${ctx.login.user.handle}` : ctx.login ? "token from BEEPM_TOKEN" : "not logged in"}`,
             )
             info(
-                `BEE2:      ${config.bee2?.version ?? color.yellow("unknown (run beepm setup)")}${config.bee2?.itemsTag ? ` with BEE2-items ${config.bee2.itemsTag}` : ""}`,
+                `BEE2:      ${bee2.dir ? `${bee2.dir} (${bee2.version ?? "version unknown: open BEE2 once"})` : color.yellow("not chosen yet (beepm bee2 <folder>)")}`,
             )
-            info(
-                `Hooked:    ${status.hooked ? color.green("yes") : status.configFound ? color.yellow(`no (BEE2 uses ${status.packageDir ?? "its default folder"})`) : color.yellow("BEE2's settings weren't found")}`,
-            )
-            info(`Packages:  ${ctx.paths.packages}`)
+            if (bee2.dir) info(`Packages:  ${ctx.paths.packages}`)
         })
 
     program

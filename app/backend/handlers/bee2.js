@@ -1,160 +1,165 @@
-import {
-    bee2Status,
-    hookBee2,
-    installBasePackages,
-    listBee2Releases,
-    loadConfig,
-    refreshBaseIds,
-    saveConfig,
-    unhookBee2,
-} from "@beepm/core/client"
-import { AppError, fileSize, requireText, throttle } from "../util.js"
+import { randomUUID } from "node:crypto"
+import path from "node:path"
+import { duplicateRemovals } from "@beepm/core"
+import { bee2Info, findBee2Folder } from "@beepm/core/client"
+import { AppError, isLocalPath, optionalText } from "../util.js"
 
-/** What the window needs to know about config.bee2 (BEE2 version and its base packages). */
-function setupSummary(config) {
-    const bee2 = config.bee2
-    if (!bee2) return null
-    return {
-        version: bee2.version ?? null,
-        name: bee2.name ?? null,
-        itemsTag: bee2.itemsTag ?? null,
-        basePackageCount: bee2.basePackages?.length ?? 0,
-        installedAt: bee2.installedAt ?? null,
-        fromLegacy: Boolean(bee2.fromLegacy),
-    }
-}
+const MAX_REVIEWS = 10
+const CLOSE_WAIT_MS = 2 * 60 * 1000
+
+const strings = (list) => (Array.isArray(list) ? list.filter((v) => typeof v === "string") : [])
+
+/** A copy of a package, for the window: where it is, when it changed, BeePM's or not. */
+const copyForWindow = ({ path: file, file: rel, name, modified, managed }) => ({
+    path: file,
+    file: rel,
+    name: name ?? null,
+    modified: modified ? new Date(modified).toISOString() : null,
+    managed: Boolean(managed),
+})
 
 /**
- * BEE2 setup and hooking. hookBee2, unhookBee2 and installBasePackages change the config
- * object, so every change is followed by saveConfig.
+ * BEE2's folder (where BeePM installs: a "beepm" folder in its packages folder) and the BEE2
+ * check: duplicates, and the user's own packages that are on BeePM (see core's check.js).
  */
 export function bee2Handlers(shared) {
     const { ctx, deps, log, step } = shared
-    let settingUp = false
+    const reviews = new Map() // reviewId -> the check the window shows, until it's acted on
 
-    /** What hooking or unhooking did, in the log. */
-    function logHook(result, unchanged) {
-        if (result.closedBee2) log.info("Closed BEE2")
-        if (!result.changed) log.info(unchanged)
-        if (result.restored) log.info(`BEE2's packages folder is ${result.restored} again`)
+    /** BEE2's folder from the running BEE2 (to suggest it), or null. */
+    async function runningFolder() {
+        if (!(await shared.bee2Process.isRunning())) return null
+        const program = await shared.bee2Program()
+        return program ? findBee2Folder(path.dirname(program)).catch(() => null) : null
+    }
+
+    /** Waits up to `ms` for BeePM's BEE2 to close (it may ask the user something first). */
+    async function waitForExit(ms) {
+        for (let waited = 0; await shared.isLocked(); waited += 1000) {
+            if (waited >= ms) return false
+            await new Promise((resolve) => setTimeout(resolve, 1000))
+        }
+        return true
     }
 
     return {
+        /**
+         * { dir, version, found, packagesDir, suggestion, moving }: BEE2's folder and version
+         * (from its log), the running BEE2's folder as a suggestion when BeePM doesn't know one,
+         * and what undoing the hook of earlier 1.0 builds waits for ("folder" or "bee2").
+         */
         "bee2:status": async () => {
-            const [status, config] = await Promise.all([
-                bee2Status(ctx.paths, ctx.bee2),
-                loadConfig(ctx.paths),
-            ])
-            // Setups made before BeePM could read BEE2's LZMA packages have no IDs yet
-            if (await refreshBaseIds(ctx.paths, config).catch(() => false)) {
-                await saveConfig(ctx.paths, config)
+            // A hook BEE2 kept from being undone (it was open) can be undone once it's closed
+            if (shared.hookState?.waitingFor === "bee2") {
+                await shared.leaveHook().catch((err) => log.warn(err.message))
             }
+            const info = await bee2Info(ctx)
             return {
-                ...status,
+                ...info,
                 packagesDir: ctx.paths.packages,
-                configFile: ctx.bee2.configFile,
-                bee2: setupSummary(config),
+                suggestion: info.dir ? null : await runningFolder(),
+                moving: shared.hookState?.waitingFor ?? null,
             }
         },
 
-        "bee2:releases": async () => ({ releases: await listBee2Releases({ fetch: ctx.fetch }) }),
+        "bee2:pick-folder": async () => {
+            const result = await deps.showOpenDialog({
+                title: "Choose BEE2's folder (the one BEE2.exe is in)",
+                properties: ["openDirectory"],
+            })
+            if (result.canceled || !result.filePaths?.length) return { canceled: true }
+            return { canceled: false, path: result.filePaths[0] }
+        },
 
         /**
-         * Downloads BEE2's own packages for a version, then hooks BEE2. Sends "bee2:progress"
-         * events: { step: "plan", assets } (every download, packages before music), { step:
-         * "closed-bee2" } if BEE2 was running, { step: "download" | "extract", asset, received,
-         * total }, then { step: "hook" }.
+         * Uses BEE2 from a folder (BEE2's, or one inside it like its packages folder): { dir,
+         * version, moved } (moved: BeePM's packages that came along from the BEE2 before).
          */
-        "bee2:setup": async (options = {}) => {
-            const version = requireText(options?.version, "Pick a BEE2 version.").replace(/^v/i, "")
-            if (settingUp) throw new AppError("BEE2 is already being set up.")
-            settingUp = true
-            const report = throttle((progress) => deps.send("bee2:progress", progress), {
-                key: (p) => `${p.step}:${p.asset ?? ""}`,
-            })
-            const onProgress = (progress) => {
-                if (progress.step === "plan") {
-                    const files = progress.assets.map((a) => `${a.name} (${fileSize(a.size)})`)
-                    log.info(`Downloading ${files.join(", ")}`)
-                } else if (progress.step === "closed-bee2") {
-                    log.info("Closed BEE2")
-                }
-                report(progress)
+        "bee2:set-folder": (input) =>
+            step("Choosing BEE2's folder", async () => {
+                const picked = optionalText(input)
+                if (!picked || !isLocalPath(picked))
+                    throw new AppError("Choose a folder on this PC.")
+                return shared.useBee2Folder(picked)
+            }),
+
+        /**
+         * What the BEE2 check finds now, for BeePM's window to choose from: { reviewId,
+         * duplicates, onBeepm, offline }. Each copy of a package has { path, file, name, modified,
+         * managed } (managed: installed from BeePM).
+         */
+        "bee2:check": async () => {
+            const check = await shared.checkBee2()
+            if (!check) {
+                throw new AppError("Choose where BEE2 is installed first.", {
+                    code: "bee2_not_set",
+                })
             }
-            try {
-                return await shared.lock(() =>
-                    step(`Setting up BEE2 ${version}`, async () => {
-                        // Where BEE2 is, before it's closed: its packages are offered in Import
-                        await shared.bee2Program().catch(() => null)
-                        const config = await loadConfig(ctx.paths)
-                        await installBasePackages(ctx.paths, config, {
-                            version,
-                            name: typeof options.name === "string" ? options.name : null,
-                            includeMusic: options.includeMusic !== false,
-                            fetch: ctx.fetch,
-                            onProgress,
-                        })
-                        // Record BEE2's packages even if hooking fails
-                        await saveConfig(ctx.paths, config)
-                        log.info(
-                            `Installed ${config.bee2.basePackages.length} of BEE2's packages (BEE2-items ${config.bee2.itemsTag})`,
-                        )
-                        report({ step: "hook" })
-                        report.flush()
-                        let hook
-                        try {
-                            hook = await hookBee2(ctx.paths, ctx.bee2, config)
-                        } catch (err) {
-                            throw new AppError(
-                                `BEE2's packages were installed, but BEE2 couldn't be hooked: ${err.message}`,
-                                { code: "hook_failed", bee2: setupSummary(config) },
-                            )
-                        }
-                        await saveConfig(ctx.paths, config)
-                        logHook(hook, "BEE2 was already hooked")
-                        return {
-                            bee2: setupSummary(config),
-                            hookChanged: hook.changed,
-                            closedBee2: hook.closedBee2,
-                        }
-                    }),
-                )
-            } finally {
-                report.flush()
-                settingUp = false
+            const reviewId = randomUUID()
+            reviews.set(reviewId, check)
+            while (reviews.size > MAX_REVIEWS) reviews.delete(reviews.keys().next().value)
+            const pkg = (p) => ({ id: p.id, name: p.name, copies: p.copies.map(copyForWindow) })
+            return {
+                reviewId,
+                duplicates: {
+                    packages: check.duplicates.packages.map(pkg),
+                    items: check.duplicates.items.map((g) => ({
+                        items: g.items,
+                        packages: g.packages.map(pkg),
+                    })),
+                },
+                onBeepm: check.onBeepm,
+                offline: check.offline,
             }
         },
 
-        "bee2:hook": () =>
-            shared.lock(() =>
-                step("Hooking BEE2", async () => {
-                    // Where BEE2 is, before it's closed: its packages are offered in Import
-                    await shared.bee2Program().catch(() => null)
-                    const config = await loadConfig(ctx.paths)
-                    const result = await hookBee2(ctx.paths, ctx.bee2, config)
-                    await saveConfig(ctx.paths, config)
-                    logHook(result, "It was already hooked")
-                    return {
-                        changed: result.changed,
-                        closedBee2: result.closedBee2,
-                        needsSetup: !config.bee2?.basePackages?.length,
-                    }
-                }),
-            ),
+        /**
+         * Does what the user chose in BeePM's window for a check: { reviewId, choices (which
+         * copy or package to keep, see duplicateRemovals), adopt: [BEE2 IDs to switch to
+         * BeePM's version], keep: [BEE2 IDs whose own copy stays, not asked about again],
+         * closeBee2 }. BEE2 has the package files open: with closeBee2 it's asked to close (and
+         * opened again after); otherwise a running BEE2 is the answer, with code "bee2_running".
+         */
+        "bee2:resolve": async (request = {}) => {
+            const review = reviews.get(request?.reviewId)
+            if (!review) throw new AppError("That check is out of date. Check again.")
+            const choices = {
+                packages: Object(request.choices?.packages),
+                items: Object(request.choices?.items),
+            }
+            const remove = duplicateRemovals(review.duplicates, choices)
+            const adoptIds = new Set(strings(request.adopt))
+            const keepIds = new Set(strings(request.keep))
+            const adopt = review.onBeepm.filter((p) => adoptIds.has(p.id)).map((p) => p.package)
+            const keep = review.onBeepm.filter((p) => keepIds.has(p.id)).map((p) => p.id)
+            if (keep.length) await shared.keepOwn(keep)
+            if (!remove.length && !adopt.length) {
+                reviews.delete(request.reviewId)
+                return { removed: [], uninstalled: [], installed: [], replaced: [] }
+            }
 
-        "bee2:unhook": () =>
-            shared.lock(() =>
-                step("Unhooking BEE2", async () => {
-                    const config = await loadConfig(ctx.paths)
-                    const result = await unhookBee2(ctx.paths, ctx.bee2, config)
-                    await saveConfig(ctx.paths, config)
-                    logHook(result, "It wasn't hooked")
-                    return {
-                        changed: result.changed,
-                        closedBee2: result.closedBee2,
-                        restored: result.restored ?? null,
-                    }
-                }),
-            ),
+            // Only BeePM's BEE2 has these files open (another BEE2 can stay open)
+            let program = null
+            if (await shared.isLocked()) {
+                if (!request.closeBee2) {
+                    throw new AppError("BEE2 is open, and it has the package files open.", {
+                        code: "bee2_running",
+                    })
+                }
+                program = await shared.bee2Process.findProgram(ctx.paths.bee2Dir)
+                const asked = await shared.bee2Process.askToClose(ctx.paths.bee2Dir)
+                if (!(await waitForExit(asked ? CLOSE_WAIT_MS : 0))) {
+                    throw new AppError("BEE2 didn't close. Close it, then try again.", {
+                        code: "bee2_running",
+                    })
+                }
+            }
+            reviews.delete(request.reviewId)
+            try {
+                return await shared.applyWork({ remove, adopt })
+            } finally {
+                if (program) deps.openProgram(program)
+            }
+        },
     }
 }

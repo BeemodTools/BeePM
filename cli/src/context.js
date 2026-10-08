@@ -1,7 +1,16 @@
 import { spawn } from "node:child_process"
 import { access } from "node:fs/promises"
-import { adoptLegacyInstalls, createClientContext, createFileTokenStore } from "@beepm/core/client"
-import { color, info, warn } from "./output.js"
+import {
+    adoptLegacyInstalls,
+    createClientContext,
+    createFileTokenStore,
+    exists,
+    findBee2Program,
+    isBee2Running,
+    leaveHook,
+    loadConfig,
+} from "@beepm/core/client"
+import { color, info, ok, warn } from "./output.js"
 
 /** Thrown for problems the user should just read (no stack trace). */
 export class CliError extends Error {}
@@ -22,7 +31,33 @@ export async function getContext() {
         ctx.api.setToken(saved.token)
         ctx.login = saved
     }
+    await leaveHookIfNeeded(ctx)
     return ctx
+}
+
+/**
+ * Earlier BeePM 1.0 builds pointed BEE2 at a folder of BeePM's own ("hooking"). This puts BEE2
+ * back and moves the packages into BEE2's packages folder as soon as it can (see leaveHook).
+ */
+export async function leaveHookIfNeeded(ctx) {
+    const config = await loadConfig(ctx.paths)
+    if (!config.hook && !(await exists(ctx.paths.hookedPackages))) return
+    const running = await isBee2Running()
+    const program = running || !ctx.paths.bee2Dir ? await findBee2Program() : null
+    const result = await leaveHook(ctx, { program, running }).catch((err) => {
+        warn(`Couldn't move BeePM's packages into BEE2's packages folder yet: ${err.message}`)
+        return null
+    })
+    if (!result) return
+    if (result.done) {
+        ok(`BEE2 loads its own packages folder again, and BeePM's packages are in it now.`)
+    } else if (result.waitingFor === "bee2") {
+        warn("Close BEE2 so BeePM can move its packages into BEE2's packages folder.")
+    } else {
+        warn(
+            `BeePM now keeps packages in BEE2's own packages folder. Tell it where BEE2 is: ${color.cyan("beepm bee2 <folder>")}`,
+        )
+    }
 }
 
 export function requireLogin(ctx) {

@@ -36,7 +36,7 @@ export function toFailure(err) {
     } else if (err instanceof LoginError) {
         failure.code = err.reason
     } else if (err instanceof InstallError) {
-        failure.code = "install"
+        failure.code = err.code ?? "install" // e.g. "bee2_not_set"
     } else if (err instanceof Bee2Error) {
         failure.code = "bee2"
     } else if (err?.code) {

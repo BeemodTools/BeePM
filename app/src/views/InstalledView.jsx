@@ -1,4 +1,3 @@
-import { useState } from "react"
 import {
     Alert,
     Box,
@@ -12,7 +11,6 @@ import {
 import InventoryIcon from "@mui/icons-material/Inventory"
 import RefreshIcon from "@mui/icons-material/Refresh"
 import UpgradeIcon from "@mui/icons-material/Upgrade"
-import { api } from "../api.js"
 import EmptyState from "../components/EmptyState.jsx"
 import { formatDate, isCompatible } from "../lib/format.js"
 import { useApp } from "../state/context.js"
@@ -27,10 +25,6 @@ const cardSx = {
     alignItems: "center",
     gap: 2,
 }
-const baseName = (file) =>
-    String(file ?? "")
-        .split(/[\\/]/)
-        .pop()
 
 function InstalledRow({ name, entry }) {
     const { bee2Version, outdatedByName, busy, job, install, uninstall, updateFor, openPackage } =
@@ -148,79 +142,19 @@ function InstalledRow({ name, entry }) {
     )
 }
 
-/** A package imported from this PC: not from the registry, so it never updates. */
-function LocalRow({ beeId, entry }) {
-    const { job, notify, refreshInstalled } = useApp()
-    const [removing, setRemoving] = useState(false)
-    const name = entry.name ?? baseName(entry.from)
-
-    async function remove() {
-        setRemoving(true)
-        const res = await api.packages.removeLocal(beeId)
-        setRemoving(false)
-        notify(res.ok ? `Removed ${name}.` : res.error, res.ok ? "success" : "error")
-        refreshInstalled()
-    }
-
-    return (
-        <Card variant="outlined" sx={cardSx}>
-            <Box sx={{ flex: 1, minWidth: 0 }}>
-                <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
-                    <Typography sx={{ fontWeight: 600, color: "#fff" }}>{name}</Typography>
-                    <Tooltip title={entry.from ?? ""}>
-                        <Chip
-                            label="Local"
-                            size="small"
-                            color="info"
-                            variant="outlined"
-                            sx={smallChip}
-                        />
-                    </Tooltip>
-                </Box>
-                <Typography variant="body2" sx={{ color: "#888", mt: 0.25 }}>
-                    Imported {formatDate(entry.importedAt)}
-                </Typography>
-            </Box>
-            <Button
-                size="small"
-                variant="outlined"
-                color="error"
-                disabled={removing || Boolean(job)}
-                onClick={remove}
-                sx={{ minWidth: 96, flexShrink: 0 }}
-            >
-                {removing ? <CircularProgress size={18} color="inherit" /> : "Remove"}
-            </Button>
-        </Card>
-    )
-}
-
-/**
- * What's installed (by you or as dependencies), with updates, then the packages imported from
- * this PC (Import), tagged Local.
- */
+/** What's installed from BeePM (by you or as dependencies), with updates. */
 export default function InstalledView({ query, onNavigate }) {
-    const { installed, local, outdated, bee2, job, install, refreshInstalled, updateFor } = useApp()
+    const { installed, outdated, bee2, job, install, refreshInstalled, updateFor } = useApp()
     const all = Object.entries(installed).sort(([a], [b]) => a.localeCompare(b))
-    const locals = Object.entries(local).sort(([, a], [, b]) =>
-        String(a.name ?? "").localeCompare(String(b.name ?? "")),
-    )
     const q = query.trim().toLowerCase()
     const shown = q
         ? all.filter(([name, entry]) => name.includes(q) || entry.beeId?.toLowerCase().includes(q))
         : all
-    const shownLocal = q
-        ? locals.filter(([, entry]) =>
-              String(entry.name ?? "")
-                  .toLowerCase()
-                  .includes(q),
-          )
-        : locals
     const updates = all.filter(([name]) => updateFor(name)).length
 
     return (
         <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
-            {bee2 && !bee2.error && !bee2.hooked && (
+            {bee2 && !bee2.error && !bee2.dir && (
                 <Alert
                     severity="warning"
                     action={
@@ -229,30 +163,24 @@ export default function InstalledView({ query, onNavigate }) {
                         </Button>
                     }
                 >
-                    BEE2 isn't hooked to BeePM, so it won't load these packages.
+                    Choose where BEE2 is installed: packages go in its packages folder.
                 </Alert>
             )}
-            {bee2 && !bee2.error && !bee2.bee2?.version && (
+            {bee2?.dir && bee2.found !== false && !bee2.version && (
                 <Alert severity="info">
-                    BeePM doesn't know your BEE2 version, so compatibility isn't checked. Set up
-                    BEE2 in Settings.
+                    Open BEE2 once so BeePM knows its version and can check compatibility.
                 </Alert>
             )}
 
-            {!all.length && !locals.length ? (
+            {!all.length ? (
                 <EmptyState
                     icon={InventoryIcon}
                     title="No packages installed"
-                    text="Find packages to install in Browse, or import your own."
+                    text="Find packages to install in Browse."
                     action={
-                        <Box sx={{ display: "flex", gap: 1, justifyContent: "center" }}>
-                            <Button variant="outlined" onClick={() => onNavigate("browse")}>
-                                Browse packages
-                            </Button>
-                            <Button variant="outlined" onClick={() => onNavigate("import")}>
-                                Import
-                            </Button>
-                        </Box>
+                        <Button variant="outlined" onClick={() => onNavigate("browse")}>
+                            Browse packages
+                        </Button>
                     }
                 />
             ) : (
@@ -267,7 +195,7 @@ export default function InstalledView({ query, onNavigate }) {
                         }}
                     >
                         <Typography variant="subtitle2" sx={{ color: "#888", flex: 1 }}>
-                            {all.length + locals.length} installed
+                            {all.length} installed
                         </Typography>
                         {all.length > 0 && (
                             <>
@@ -305,10 +233,7 @@ export default function InstalledView({ query, onNavigate }) {
                     {shown.map(([name, entry]) => (
                         <InstalledRow key={name} name={name} entry={entry} />
                     ))}
-                    {shownLocal.map(([beeId, entry]) => (
-                        <LocalRow key={beeId} beeId={beeId} entry={entry} />
-                    ))}
-                    {!shown.length && !shownLocal.length && (
+                    {!shown.length && (
                         <Typography sx={{ color: "#888", textAlign: "center", py: 4 }}>
                             No installed package matches "{query.trim()}".
                         </Typography>

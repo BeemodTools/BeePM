@@ -19,7 +19,6 @@ export default function AppProvider({ children }) {
     const [auth, setAuth] = useState({ loading: true, loggedIn: false })
     const [bee2, setBee2] = useState(null)
     const [installed, setInstalled] = useState({})
-    const [local, setLocal] = useState({}) // packages imported from this PC, by BEE2 ID
     const [outdated, setOutdated] = useState({ rows: null, loading: false, error: null })
     const [toasts, setToasts] = useState([])
     const [login, setLoginState] = useState(null)
@@ -30,6 +29,7 @@ export default function AppProvider({ children }) {
     const [registryVersion, setRegistryVersion] = useState(0)
     const [publishRequest, setPublishRequest] = useState(null)
     const [viewRequest, setViewRequest] = useState(null) // { view, id }: see goTo
+    const [reviewOpen, setReviewOpen] = useState(false) // the BEE2 check (ReviewDialog)
     const loginRef = useRef(null)
     const jobRef = useRef(null)
     const installedRequest = useRef(0)
@@ -56,8 +56,11 @@ export default function AppProvider({ children }) {
     const openPackage = useCallback((name) => setDetails(name), [])
     const closeDetails = useCallback(() => setDetails(null), [])
 
-    /** Opens a view ("import", "installed", ...) from anywhere: App.jsx switches to it. */
+    /** Opens a view ("installed", "settings", ...) from anywhere: App.jsx switches to it. */
     const goTo = useCallback((view) => setViewRequest({ view, id: newId() }), [])
+
+    const openReview = useCallback(() => setReviewOpen(true), [])
+    const closeReview = useCallback(() => setReviewOpen(false), [])
 
     // ---------- loading state ----------
 
@@ -91,10 +94,7 @@ export default function AppProvider({ children }) {
     const refreshInstalled = useCallback(async () => {
         const request = ++installedRequest.current
         const res = await api.packages.installed()
-        if (request === installedRequest.current && res.ok) {
-            setInstalled(res.packages)
-            setLocal(res.local ?? {})
-        }
+        if (request === installedRequest.current && res.ok) setInstalled(res.packages)
         checkUpdates()
     }, [checkUpdates])
 
@@ -188,8 +188,9 @@ export default function AppProvider({ children }) {
             if (res.removed.length) {
                 notify(`Removed ${res.removed.join(", ")} (no longer needed).`, "info")
             }
-            if (res.replacedLocal?.length) {
-                notify(`Replaced your local copy of ${res.replacedLocal.join(", ")}.`, "info")
+            if (res.replaced?.length) {
+                const names = res.replaced.map((r) => r.name).join(", ")
+                notify(`Moved your own copy of ${names} to BeePM's backups.`, "info")
             }
             if (showWarnings && names.length && res.warnings.length) {
                 notify(res.warnings.join(" "), "warning")
@@ -315,8 +316,12 @@ export default function AppProvider({ children }) {
                         : current,
                 )
             }),
-            onEvent("packages:changed", () => refreshInstalled()),
+            onEvent("packages:changed", () => {
+                refreshInstalled()
+                refreshBee2() // e.g. BeePM switched to another BEE2
+            }),
             onEvent("app:notice", (notice) => notify(notice.message, notice.severity ?? "info")),
+            onEvent("app:review", () => setReviewOpen(true)),
             onEvent("app:protocol", (action) => {
                 if (action?.action === "publish" && action.file) {
                     setPublishRequest({ file: action.file, id: newId() })
@@ -346,7 +351,7 @@ export default function AppProvider({ children }) {
 
     // ---------- derived ----------
 
-    const bee2Version = bee2?.bee2?.version ?? null
+    const bee2Version = bee2?.version ?? null
     const outdatedByName = useMemo(
         () => Object.fromEntries((outdated.rows ?? []).map((row) => [row.name, row])),
         [outdated.rows],
@@ -379,7 +384,6 @@ export default function AppProvider({ children }) {
         bee2,
         bee2Version,
         installed,
-        local,
         outdated,
         outdatedByName,
         toasts,
@@ -392,6 +396,9 @@ export default function AppProvider({ children }) {
         publishRequest,
         viewRequest,
         goTo,
+        reviewOpen,
+        openReview,
+        closeReview,
         notify,
         dismissToast,
         askConfirm,

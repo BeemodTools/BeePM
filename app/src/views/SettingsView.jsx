@@ -23,13 +23,13 @@ import {
 import CheckIcon from "@mui/icons-material/Check"
 import DownloadIcon from "@mui/icons-material/Download"
 import EditIcon from "@mui/icons-material/Edit"
+import FactCheckIcon from "@mui/icons-material/FactCheck"
 import FolderOpenIcon from "@mui/icons-material/FolderOpen"
 import GitHubIcon from "@mui/icons-material/GitHub"
 import LinkIcon from "@mui/icons-material/Link"
 import LoginIcon from "@mui/icons-material/Login"
 import LogoutIcon from "@mui/icons-material/Logout"
 import { api } from "../api.js"
-import Bee2SetupDialog from "../components/Bee2SetupDialog.jsx"
 import Brand from "../components/Brand.jsx"
 import DiscordIcon from "../components/DiscordIcon.jsx"
 import { formatDate, providerLabel } from "../lib/format.js"
@@ -386,7 +386,7 @@ function AccountSection() {
     )
 }
 
-/** Running in the background, and the packages whose updates aren't offered anymore. */
+/** Looking at BEE2's packages in the background, and what it doesn't ask about anymore. */
 function BackgroundSetting() {
     const { notify } = useApp()
     const [settings, setSettings] = useState(null)
@@ -403,16 +403,18 @@ function BackgroundSetting() {
 
     if (!settings) return null
     const ignored = settings.ignoredUpdates
+    const kept = settings.keepOwn ?? []
+    const otherBee2 = settings.ignoredBee2 ?? []
     return (
         <>
             <Divider sx={{ my: 2 }} />
             <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
                 <Box sx={{ flex: 1 }}>
                     <Typography sx={{ color: "#fff", fontWeight: 500 }}>
-                        Update packages when BEE2 opens
+                        Check packages when BEE2 opens
                     </Typography>
                     <Typography variant="body2" sx={{ color: "#888" }}>
-                        BeePM starts with Windows and waits in the tray.
+                        Updates and duplicates. BeePM starts with Windows and waits in the tray.
                     </Typography>
                 </Box>
                 <Switch
@@ -423,9 +425,30 @@ function BackgroundSetting() {
             {ignored.length > 0 && (
                 <Box sx={{ display: "flex", alignItems: "center", gap: 2, mt: 1 }}>
                     <Typography variant="body2" sx={{ color: "#888", flex: 1 }}>
-                        Not asking about {ignored.join(", ")}
+                        Not asking about updates of {ignored.join(", ")}
                     </Typography>
                     <Button size="small" onClick={() => change({ ignoredUpdates: [] })}>
+                        Ask again
+                    </Button>
+                </Box>
+            )}
+            {kept.length > 0 && (
+                <Box sx={{ display: "flex", alignItems: "center", gap: 2, mt: 1 }}>
+                    <Typography variant="body2" sx={{ color: "#888", flex: 1 }}>
+                        Keeping your own copy of {kept.length} package{kept.length === 1 ? "" : "s"}{" "}
+                        that {kept.length === 1 ? "is" : "are"} on BeePM
+                    </Typography>
+                    <Button size="small" onClick={() => change({ keepOwn: [] })}>
+                        Ask again
+                    </Button>
+                </Box>
+            )}
+            {otherBee2.length > 0 && (
+                <Box sx={{ display: "flex", alignItems: "center", gap: 2, mt: 1 }}>
+                    <Typography variant="body2" sx={{ color: "#888", flex: 1 }}>
+                        Not asking about BEE2 from {otherBee2.join(", ")}
+                    </Typography>
+                    <Button size="small" onClick={() => change({ ignoredBee2: [] })}>
                         Ask again
                     </Button>
                 </Box>
@@ -434,54 +457,30 @@ function BackgroundSetting() {
     )
 }
 
+/** Where BEE2 is: BeePM installs into its packages folder, in a "beepm" folder. */
 function Bee2Section() {
     const app = useApp()
     const { bee2 } = app
-    const [setupOpen, setSetupOpen] = useState(false)
     const [busy, setBusy] = useState(false)
-    const setup = bee2?.bee2
-    const hooked = Boolean(bee2?.hooked)
-    const setUp = Boolean(setup?.version && setup.basePackageCount)
+    const ready = Boolean(bee2?.dir && bee2.found !== false)
 
-    const hookText = !bee2
-        ? "Checking…"
-        : bee2.error
-          ? bee2.error
-          : hooked
-            ? "BEE2 loads packages from BeePM."
-            : bee2.configFound === false
-              ? "BEE2's settings weren't found. Install BEE2 and open it once."
-              : "BEE2 doesn't load packages from BeePM yet."
-
-    async function run(action) {
+    async function takeFolder(folder) {
         setBusy(true)
-        const res = await action()
+        const res = await api.bee2.setFolder(folder)
         setBusy(false)
-        await app.refreshBee2()
-        return res
-    }
-
-    const closedNote = (res) => (res.closedBee2 ? " BEE2 was open, so BeePM closed it." : "")
-
-    async function hook() {
-        const res = await run(() => api.bee2.hook())
+        await Promise.all([app.refreshBee2(), app.refreshInstalled()])
         if (!res.ok) return app.notify(res.error, "error")
+        const moved = res.moved ? ` Moved ${res.moved} of BeePM's packages there.` : ""
         app.notify(
-            (res.changed ? "BEE2 now loads packages from BeePM." : "BEE2 was already hooked.") +
-                closedNote(res),
+            `Using BEE2${res.version ? ` ${res.version}` : ""} from ${res.dir}.${moved}`,
             "success",
         )
     }
 
-    async function unhook() {
-        const res = await run(() => api.bee2.unhook())
-        if (!res.ok) return app.notify(res.error, "error")
-        app.notify(
-            (res.changed
-                ? "BEE2 uses its own packages folder again."
-                : "BEE2 wasn't hooked to BeePM.") + closedNote(res),
-            "success",
-        )
+    async function choose() {
+        const picked = await api.bee2.pickFolder()
+        if (!picked.ok) return app.notify(picked.error, "error")
+        if (!picked.canceled) await takeFolder(picked.path)
     }
 
     async function openFolder() {
@@ -492,94 +491,73 @@ function Bee2Section() {
     return (
         <>
             <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
-                <Box sx={{ flex: 1 }}>
-                    <Typography sx={{ color: "#fff", fontWeight: 500 }}>Hook</Typography>
+                <Box sx={{ flex: 1, minWidth: 0 }}>
+                    <Typography sx={{ color: "#fff", fontWeight: 500 }}>
+                        {ready ? `BEE2${bee2.version ? ` ${bee2.version}` : ""}` : "BEE2's folder"}
+                    </Typography>
                     <Typography variant="body2" sx={{ color: "#888", overflowWrap: "anywhere" }}>
-                        {hookText}
+                        {!bee2
+                            ? "Checking…"
+                            : (bee2.error ?? bee2.dir ?? "Choose the folder BEE2.exe is in.")}
                     </Typography>
                 </Box>
-                <Chip
-                    label={hooked ? "Hooked" : "Not hooked"}
-                    size="small"
-                    sx={{
-                        fontWeight: 500,
-                        backgroundColor: hooked ? "#1db34f" : "#d32f2f",
-                        color: "#fff",
-                    }}
-                />
+                <Button
+                    variant={bee2?.dir ? "outlined" : "contained"}
+                    startIcon={<FolderOpenIcon />}
+                    onClick={choose}
+                    disabled={busy || !bee2}
+                    sx={{ flexShrink: 0 }}
+                >
+                    {bee2?.dir ? "Change" : "Choose"}
+                </Button>
             </Box>
-            {/* BEE2 no longer loads its own packages folder: until something is imported */}
-            {hooked && !Object.keys(app.local).length && (
+            {bee2?.suggestion && !bee2.dir && (
                 <Alert
                     severity="info"
                     sx={{ mt: 1.5 }}
                     action={
-                        <Button color="inherit" size="small" onClick={() => app.goTo("import")}>
-                            Import
+                        <Button
+                            color="inherit"
+                            size="small"
+                            disabled={busy}
+                            onClick={() => takeFolder(bee2.suggestion)}
+                        >
+                            Use it
                         </Button>
                     }
                 >
-                    Your own packages aren't gone: import them to load them in BEE2.
+                    BEE2 is running from {bee2.suggestion}
                 </Alert>
             )}
-            <Divider sx={{ my: 2 }} />
-            <Typography sx={{ color: "#fff", fontWeight: 500 }}>
-                {setup?.version ? setup.name || `BEE2 ${setup.version}` : "BEE2 isn't set up"}
-            </Typography>
-            <Typography variant="body2" sx={{ color: "#888" }}>
-                {setup?.version
-                    ? [
-                          `BEE2 ${setup.version}`,
-                          setup.itemsTag && `BEE2-items ${setup.itemsTag}`,
-                          setup.basePackageCount && `${setup.basePackageCount} of BEE2's packages`,
-                      ]
-                          .filter(Boolean)
-                          .join(" · ")
-                    : null}
-            </Typography>
-            {setup?.fromLegacy && (
+            {bee2?.dir && bee2.found === false && (
+                <Alert severity="warning" sx={{ mt: 1.5 }}>
+                    BEE2 isn't in this folder anymore. Choose where it is now.
+                </Alert>
+            )}
+            {ready && !bee2.version && (
                 <Alert severity="info" sx={{ mt: 1.5 }}>
-                    This BEE2 version comes from an earlier BeePM version. Set up BEE2 again to get
-                    BEE2's packages into BeePM's folder.
+                    Open BEE2 once so BeePM knows its version.
                 </Alert>
             )}
-            <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap", alignItems: "center", mt: 2 }}>
-                <Button
-                    variant="contained"
-                    startIcon={<DownloadIcon />}
-                    onClick={() => setSetupOpen(true)}
-                >
-                    {setup?.version ? "Change BEE2 version" : "Set up BEE2"}
+            {bee2?.moving === "bee2" && (
+                <Alert severity="info" sx={{ mt: 1.5 }}>
+                    Close BEE2 so BeePM can move its packages into BEE2's packages folder.
+                </Alert>
+            )}
+            <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap", mt: 2 }}>
+                <Button startIcon={<FactCheckIcon />} onClick={app.openReview} disabled={!ready}>
+                    Check packages
                 </Button>
-                {hooked ? (
-                    <Button variant="outlined" color="error" onClick={unhook} disabled={busy}>
-                        Unhook
-                    </Button>
-                ) : (
-                    <Tooltip
-                        title={
-                            setUp
-                                ? ""
-                                : "Set up BEE2 first: BEE2 needs its own packages in BeePM's folder."
-                        }
-                    >
-                        <span>
-                            <Button
-                                variant="outlined"
-                                onClick={hook}
-                                disabled={busy || !bee2 || bee2.configFound === false || !setUp}
-                            >
-                                Hook
-                            </Button>
-                        </span>
-                    </Tooltip>
-                )}
-                <Button startIcon={<FolderOpenIcon />} onClick={openFolder} sx={{ ml: "auto" }}>
+                <Button
+                    startIcon={<FolderOpenIcon />}
+                    onClick={openFolder}
+                    disabled={!ready}
+                    sx={{ ml: "auto" }}
+                >
                     Open packages folder
                 </Button>
             </Box>
             <BackgroundSetting />
-            <Bee2SetupDialog open={setupOpen} onClose={() => setSetupOpen(false)} />
         </>
     )
 }

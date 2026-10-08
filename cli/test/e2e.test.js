@@ -180,12 +180,23 @@ test("login, publish, install, update, uninstall through the CLI", async () => {
     assert.match((await beepm("search", "maker")).out, /@maker\/app/)
     assert.match((await beepm("info", "app")).out, /BEE2 ID: MAKER_APP/)
 
+    // Installing needs to know where BEE2 is: packages go in its packages folder
+    const unset = await beepm("install", "app")
+    assert.equal(unset.code, 1)
+    assert.match(unset.out, /Choose where BEE2 is installed first\. Run: beepm bee2/)
+    const bee2 = path.join(dir, "BEE2")
+    await mkdir(path.join(bee2, "packages"), { recursive: true })
+    await writeFile(path.join(bee2, "BEE2.exe"), "")
+    const chosen = await beepm("bee2", path.join(bee2, "packages"))
+    assert.equal(chosen.code, 0, chosen.out)
+    assert.ok(chosen.out.includes(`BEE2: ${bee2}`), chosen.out)
+
     // Install by bare name: the dependency comes along, checked against its SHA-256
     const installed = await beepm("install", "app")
     assert.equal(installed.code, 0, installed.out)
     assert.match(installed.out, /Installed @maker\/lib@1\.0\.0/)
     assert.match(installed.out, /Installed @maker\/app@1\.0\.0/)
-    const packages = path.join(process.env.BEEPM_HOME, "packages")
+    const packages = path.join(bee2, "packages", "beepm")
     const onDisk = await readFile(path.join(packages, "maker@app.bee_pack"))
     assert.ok(onDisk.length > 0)
     assert.match((await beepm("list")).out, /@maker\/lib\s+1\.0\.0\s+dependency/)
@@ -215,14 +226,20 @@ test("login, publish, install, update, uninstall through the CLI", async () => {
     assert.match((await beepm("list")).out, /No packages are installed/)
 })
 
-test("hook, status and unhook edit BEE2's config", async () => {
-    await mkdir(process.env.BEE2_CONFIG_DIR, { recursive: true })
-    const cfg = path.join(process.env.BEE2_CONFIG_DIR, "config.cfg")
-    await writeFile(cfg, "[Directories]\npackage = ../packages/\n")
-    assert.match((await beepm("hook")).out, /Hooked BEE2 to BeePM/)
-    assert.match((await beepm("status")).out, /Hooked:\s+yes/)
-    assert.match((await beepm("unhook")).out, /BEE2 uses \.\.\/packages\/ again/)
-    assert.equal(await readFile(cfg, "utf8"), "[Directories]\npackage = ../packages/\n")
+test("bee2 and status show where BEE2 is and its version", async () => {
+    const bee2 = path.join(dir, "BEE2")
+    await mkdir(path.join(bee2, "logs"), { recursive: true })
+    await writeFile(
+        path.join(bee2, "logs", "bee2.log"),
+        '[INFO] BEE2_launch.<module>(): Running "bee2", version 2.4.46.1 64-bit:\n',
+    )
+    const shown = await beepm("bee2")
+    assert.match(shown.out, /Version:\s+2\.4\.46\.1/) // read from BEE2's log
+    assert.match(shown.out, /Packages:\s+.*beepm/)
+    assert.match((await beepm("status")).out, /BEE2:\s+.*\(2\.4\.46\.1\)/)
+    const wrong = await beepm("bee2", path.join(dir, "storage"))
+    assert.equal(wrong.code, 1)
+    assert.match(wrong.out, /Choose the folder BEE2\.exe is in/)
 })
 
 test("new writes bee-package.json from info.txt", async () => {

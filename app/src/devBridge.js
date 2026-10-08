@@ -3,8 +3,9 @@
  * the Vite dev server. It answers every call with sample data and simulates logins, downloads and
  * uploads, so nothing is installed, published or opened for real.
  *
- * URL options: ?loggedout starts logged out, ?admin makes the sample user an admin, ?unhooked
- * starts with BEE2 not hooked.
+ * URL options: ?loggedout starts logged out, ?admin makes the sample user an admin, ?nobee2:
+ * BeePM doesn't know where BEE2 is, ?bee2open: BEE2 is running, ?clean: the BEE2 check finds
+ * nothing (no duplicates, none of the user's packages on BeePM).
  */
 import { isCompatible } from "@beepm/core/compat"
 import semver from "semver"
@@ -18,7 +19,8 @@ const ok = (data = {}) => ({ ok: true, ...data })
 const fail = (error, extra = {}) => ({ ok: false, error, ...extra })
 const clone = (value) => JSON.parse(JSON.stringify(value))
 
-const PACKAGES_DIR = "C:\\Users\\you\\AppData\\Roaming\\beepm\\packages"
+const BEE2_DIR = "C:\\Users\\you\\Documents\\BEE2_4.46.0_win"
+const PACKAGES_DIR = `${BEE2_DIR}\\packages\\beepm`
 const USERS = ["areng14", "portalfan", "oldtimer", "carl", "mel"]
 
 function version(v, extra = {}) {
@@ -170,6 +172,53 @@ function samplePackages() {
     )
 }
 
+/** A copy of a package in BEE2's packages folder, changed `ago` days ago. */
+const copyOf = (file, name, ago) => ({
+    path: `${BEE2_DIR}\\packages\\${file}`,
+    file,
+    name,
+    modified: days(ago),
+    managed: false,
+})
+
+/** The BEE2 check: a package there twice, two packages with the same items, one on BeePM. */
+function sampleCheck() {
+    return {
+        duplicates: {
+            packages: [
+                {
+                    id: "PORTAL_PROPS",
+                    name: "Portal Props",
+                    copies: [
+                        copyOf("portal-props-v2.bee_pack", "Portal Props", 3),
+                        copyOf("Old\\portal-props.bee_pack", "Portal Props", 120),
+                    ],
+                },
+            ],
+            items: [
+                {
+                    items: ["ITEM_SIGN_ARROW", "ITEM_SIGN_EXIT"],
+                    packages: [
+                        {
+                            id: "SIGNAGE_PLUS",
+                            name: "Signage Plus",
+                            copies: [copyOf("signage_plus.bee_pack", "Signage Plus", 10)],
+                        },
+                        {
+                            id: "OLD_SIGNAGE",
+                            name: "Old Signage",
+                            copies: [copyOf("old_signage.zip", "Old Signage", 400)],
+                        },
+                    ],
+                },
+            ],
+        },
+        onBeepm: [
+            { id: "MEL_SOUNDS", name: "Mel Sounds", file: "mel.zip", package: "@mel/mel-sounds" },
+        ],
+    }
+}
+
 /** A small picture without fetching anything: a colored square with a letter. */
 const sampleAvatar = (color, letter) =>
     `data:image/svg+xml,${encodeURIComponent(
@@ -198,15 +247,7 @@ const state = {
             lastLoginAt: days(1),
         },
     ],
-    bee2: {
-        version: "2.4.46.1",
-        name: "Version 4.46.1",
-        itemsTag: "v4.46.0",
-        basePackageCount: 23,
-        installedAt: days(10),
-        fromLegacy: false,
-    },
-    hooked: !params.has("unhooked"),
+    bee2: { dir: params.has("nobee2") ? null : BEE2_DIR, version: "2.4.46.1" },
     docs: samplePackages(),
     installed: {
         "@areng14/arengitems": {
@@ -221,10 +262,17 @@ const state = {
             installedAt: days(30),
         },
     },
-    // Packages imported from this PC, by BEE2 ID
-    local: {},
-    appSettings: { background: true, ignoredUpdates: ["@mel/mel-sounds"], trayHintShown: true },
-    imports: new Map(),
+    appSettings: {
+        background: true,
+        ignoredUpdates: ["@mel/mel-sounds"],
+        keepOwn: [],
+        ignoredBee2: [],
+        trayHintShown: true,
+    },
+    // What the BEE2 check finds in BEE2's packages folder
+    check: params.has("clean")
+        ? { duplicates: { packages: [], items: [] }, onBeepm: [] }
+        : sampleCheck(),
     plans: new Map(),
     prepared: new Map(),
     // package path -> its bee-package.json (folders start without one)
@@ -262,26 +310,11 @@ const state = {
     ]),
 }
 
-/** Like the real one: true if BEE2 was running (and now isn't). */
-function closeBee2() {
-    const was = state.bee2Running
-    state.bee2Running = false
-    return was
-}
-
 // ---------- events ----------
 
 const listeners = new Map()
 function emit(event, payload) {
     for (const callback of listeners.get(event) ?? []) callback(payload)
-}
-
-/** "packages:import-progress" for a scan's phase: one package after another. */
-async function importSteps(phase, total, delay) {
-    for (let done = 0; done <= total; done++) {
-        emit("packages:import-progress", { phase, done, total })
-        await sleep(delay)
-    }
 }
 
 async function simulate(total, steps, delay, report) {
@@ -589,6 +622,7 @@ const bridge = {
             return ok()
         },
         openPackagesFolder: async () => {
+            if (!state.bee2.dir) return fail("Choose where BEE2 is installed first.")
             console.info(`[dev bridge] would open ${PACKAGES_DIR}`)
             return ok()
         },
@@ -718,142 +752,7 @@ const bridge = {
     },
 
     packages: {
-        installed: async () => ok({ packages: clone(state.installed), local: clone(state.local) }),
-        pickImport: async (kind) =>
-            ok({
-                canceled: false,
-                path:
-                    kind === "folder"
-                        ? "C:\\Users\\you\\Documents\\BEE2 packages"
-                        : "C:\\Users\\you\\Downloads\\portal-props.bee_pack",
-            }),
-        // ?nobee2folder: BeePM hasn't seen BEE2 run, so it doesn't know where BEE2's folder is
-        importSources: async () =>
-            ok({
-                hooked: state.hooked,
-                folders:
-                    state.hooked && !params.has("nobee2folder")
-                        ? ["C:\\Users\\you\\Documents\\BEE2_4.46.0_win\\packages"]
-                        : [],
-            }),
-        // A folder of packages: one on BeePM, one installed already, one of BEE2's own, two local
-        importScan: async (target) => {
-            const single = String(target).endsWith(".bee_pack")
-            await importSteps("read", single ? 1 : 24, 60)
-            await importSteps("check", single ? 1 : 3, 250)
-            const items = single
-                ? [
-                      {
-                          name: "Portal Props",
-                          file: "portal-props.bee_pack",
-                          beeId: "PORTAL_PROPS",
-                          action: "local",
-                          replaces: Boolean(state.local.PORTAL_PROPS),
-                      },
-                  ]
-                : [
-                      {
-                          name: "Mel Sounds",
-                          file: "mel.zip",
-                          action: "beepm",
-                          package: "@mel/mel-sounds",
-                      },
-                      {
-                          name: "Areng's Items",
-                          file: "ArengItems.bee_pack",
-                          action: "skip",
-                          reason: "@areng14/arengitems is installed from BeePM",
-                      },
-                      {
-                          name: "Clean Style",
-                          file: "clean_style.bee_pack",
-                          action: "skip",
-                          reason: "It's one of BEE2's own packages",
-                      },
-                      {
-                          name: "My Test Chamber Kit",
-                          file: "test-kit",
-                          beeId: "TEST_KIT",
-                          action: "local",
-                          replaces: Boolean(state.local.TEST_KIT),
-                      },
-                      {
-                          name: "Old Signage",
-                          file: "Signage\\old_signage.zip", // in a folder inside the one chosen
-                          beeId: "OLD_SIGNAGE",
-                          action: "local",
-                          replaces: Boolean(state.local.OLD_SIGNAGE),
-                      },
-                  ]
-            const importId = rid()
-            state.imports.set(importId, { target, items })
-            return ok({
-                importId,
-                offline: false,
-                items: items.map(({ beeId: _id, ...item }) => ({ reason: null, ...item })),
-            })
-        },
-        importApply: async (importId) => {
-            const scan = state.imports.get(importId)
-            if (!scan) return fail("That import is out of date. Try again.")
-            state.imports.delete(importId)
-            const imported = []
-            const installed = []
-            const local = scan.items.filter((item) => item.action === "local")
-            const fromBeepm = scan.items.filter((item) => item.action === "beepm")
-            for (const [index, item] of local.entries()) {
-                emit("packages:import-progress", {
-                    phase: "copy",
-                    done: index,
-                    total: local.length,
-                    name: item.name,
-                })
-                await sleep(2500)
-            }
-            for (const [index, item] of fromBeepm.entries()) {
-                await simulate(4_200_000, 10, 150, (received) =>
-                    emit("packages:import-progress", {
-                        phase: "download",
-                        done: index,
-                        total: fromBeepm.length,
-                        name: item.package,
-                        received,
-                        size: 4_200_000,
-                    }),
-                )
-            }
-            for (const item of scan.items) {
-                if (item.action === "local") {
-                    state.local[item.beeId] = {
-                        name: item.name,
-                        file: `${item.beeId.toLowerCase()}.local.bee_pack`,
-                        from: `${scan.target}${item.file === "portal-props.bee_pack" ? "" : `\\${item.file}`}`,
-                        importedAt: new Date().toISOString(),
-                    }
-                    imported.push(item.name)
-                } else if (item.action === "beepm") {
-                    const doc = state.docs.get(item.package)
-                    state.installed[item.package] = {
-                        version: doc.latest,
-                        range: "*",
-                        explicit: true,
-                        file: `${item.package.slice(1).replace("/", "@")}.bee_pack`,
-                        beeId: doc.beeId,
-                        dependencies: {},
-                        compatibleWith: null,
-                        installedAt: new Date().toISOString(),
-                    }
-                    installed.push(`${item.package}@${doc.latest}`)
-                }
-            }
-            return ok({ imported, installed })
-        },
-        removeLocal: async (beeId) => {
-            await sleep(200)
-            if (!state.local[beeId]) return fail("That local package isn't there anymore.")
-            delete state.local[beeId]
-            return ok()
-        },
+        installed: async () => ok({ packages: clone(state.installed) }),
         plan: async (specs = [], options = {}) => {
             await sleep(300)
             try {
@@ -986,83 +885,70 @@ const bridge = {
     bee2: {
         status: async () =>
             ok({
-                configFound: true,
-                hooked: state.hooked,
-                packageDir: state.hooked ? PACKAGES_DIR : "../packages/",
-                packagesDir: PACKAGES_DIR,
-                configFile: "C:\\Users\\you\\AppData\\Roaming\\BEEMOD2\\config\\config.cfg",
-                bee2: clone(state.bee2),
+                dir: state.bee2.dir,
+                version: state.bee2.dir ? state.bee2.version : null,
+                found: Boolean(state.bee2.dir),
+                packagesDir: state.bee2.dir ? PACKAGES_DIR : null,
+                suggestion: !state.bee2.dir && state.bee2Running ? BEE2_DIR : null,
+                moving: null,
             }),
-        releases: async () => {
-            await sleep(400)
-            return ok({
-                releases: [
-                    { version: "2.4.46.1", name: "Version 4.46.1", publishedAt: days(40) },
-                    { version: "2.4.46.0", name: "Version 4.46.0", publishedAt: days(75) },
-                    { version: "2.4.45.2", name: "Version 4.45.2", publishedAt: days(200) },
-                    { version: "2.4.44.0", name: "Version 4.44.0", publishedAt: days(380) },
-                ],
-            })
+        pickFolder: async () => ok({ canceled: false, path: BEE2_DIR }),
+        setFolder: async (folder) => {
+            await sleep(300)
+            state.bee2.dir = String(folder).replace(/\\packages(\\beepm)?$/i, "")
+            return ok({ dir: state.bee2.dir, version: state.bee2.version, moved: 0 })
         },
-        setup: async ({ version: v, name, includeMusic = true } = {}) => {
-            if (!v) return fail("Pick a BEE2 version.")
-            const assets = [
-                { name: "BEE2_Packages.zip", size: 24_000_000 },
-                ...(includeMusic ? [{ name: "BEE2_Music.zip", size: 61_000_000 }] : []),
-            ]
-            emit("bee2:progress", { step: "plan", assets })
-            const closedBee2 = closeBee2()
-            if (closedBee2) emit("bee2:progress", { step: "closed-bee2" })
-            for (const asset of assets) {
-                await simulate(asset.size, 12, 110, (received) =>
-                    emit("bee2:progress", {
-                        step: "download",
-                        asset: asset.name,
-                        received,
-                        total: asset.size,
-                    }),
-                )
-                await simulate(400, 8, 70, (count) =>
-                    emit("bee2:progress", {
-                        step: "extract",
-                        asset: asset.name,
-                        received: count,
-                        total: 0,
-                    }),
-                )
-            }
-            emit("bee2:progress", { step: "hook" })
+        check: async () => {
             await sleep(500)
-            state.bee2 = {
-                version: v,
-                name: name ?? null,
-                itemsTag: `v4.${v.split(".")[2]}.0`,
-                basePackageCount: includeMusic ? 25 : 23,
-                installedAt: new Date().toISOString(),
-                fromLegacy: false,
+            if (!state.bee2.dir) return fail("Choose where BEE2 is installed first.")
+            const onBeepm = state.check.onBeepm.filter(
+                (p) => !state.appSettings.keepOwn.includes(p.id),
+            )
+            return ok({ reviewId: rid(), ...clone(state.check), onBeepm, offline: false })
+        },
+        // Deletes what wasn't kept, and installs BeePM's version of the packages switched
+        resolve: async ({ choices = {}, adopt = [], keep = [], closeBee2 = false } = {}) => {
+            await sleep(600)
+            const { duplicates, onBeepm } = state.check
+            const removed = []
+            for (const group of duplicates.packages) {
+                const kept = choices.packages?.[group.id] ?? group.copies[0].path
+                removed.push(...group.copies.filter((c) => c.path !== kept).map((c) => c.path))
             }
-            const hookChanged = !state.hooked
-            state.hooked = true
-            return ok({ bee2: clone(state.bee2), hookChanged, closedBee2 })
-        },
-        hook: async () => {
-            await sleep(200)
-            const changed = !state.hooked
-            state.hooked = true
-            return ok({
-                changed,
-                closedBee2: changed && closeBee2(),
-                needsSetup: !state.bee2,
+            duplicates.items.forEach((group, index) => {
+                const kept = choices.items?.[index] ?? group.packages[0].id
+                for (const pkg of group.packages.filter((p) => p.id !== kept)) {
+                    removed.push(...pkg.copies.map((c) => c.path))
+                }
             })
-        },
-        unhook: async () => {
-            await sleep(200)
-            const changed = state.hooked
-            state.hooked = false
+            const switching = onBeepm.filter((p) => adopt.includes(p.id))
+            state.appSettings.keepOwn.push(...keep)
+            if ((removed.length || switching.length) && state.bee2Running && !closeBee2) {
+                return fail("BEE2 is open, and it has the package files open.", {
+                    code: "bee2_running",
+                })
+            }
+            const installed = []
+            for (const { package: name } of switching) {
+                const doc = state.docs.get(name)
+                state.installed[name] = {
+                    version: doc.latest,
+                    range: "*",
+                    explicit: true,
+                    file: `${name.slice(1).replace("/", "@")}.bee_pack`,
+                    beeId: doc.beeId,
+                    dependencies: {},
+                    compatibleWith: null,
+                    installedAt: new Date().toISOString(),
+                }
+                installed.push(`${name}@${doc.latest}`)
+            }
+            state.check = { duplicates: { packages: [], items: [] }, onBeepm: [] }
             return ok({
-                changed,
-                closedBee2: changed && closeBee2(),
-                restored: changed ? "../packages/" : null,
+                removed,
+                uninstalled: [],
+                installed,
+                replaced: switching.map((p) => ({ name: p.package, files: [p.file] })),
             })
         },
     },

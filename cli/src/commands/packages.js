@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises"
 import {
     applyPlan,
+    bee2Info,
     InstallError,
     loadConfig,
     loadInstalled,
@@ -72,6 +73,9 @@ async function runPlan(ctx, plan, { yes = false } = {}) {
     bar?.done()
     for (const step of result.installed) ok(`Installed ${step.name}@${step.to}`)
     for (const name of result.removed) info(color.dim(`Removed ${name} (no longer needed)`))
+    for (const { name, files } of result.replaced) {
+        info(color.dim(`Moved your own copy of ${name} (${files.join(", ")}) to BeePM's backups`))
+    }
     info(color.dim("Restart BEE2 (or reload packages) to see the changes."))
 }
 
@@ -145,10 +149,10 @@ export function register(program) {
                 throw new CliError(
                     "Say which packages to install, e.g. beepm install @areng14/arengitems",
                 )
-            const config = await loadConfig(ctx.paths)
-            if (!config.bee2?.version) {
+            const bee2 = await bee2Info(ctx) // reads BEE2's version from its log again
+            if (bee2.dir && !bee2.version) {
                 warn(
-                    `BeePM doesn't know your BEE2 version yet, so compatibility isn't checked. Run ${color.cyan("beepm setup")}.`,
+                    "BeePM doesn't know your BEE2 version yet (open BEE2 once), so compatibility isn't checked.",
                 )
             }
             await runPlan(ctx, await planInstall(ctx, all, { force: options.force }), options)

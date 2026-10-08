@@ -8,11 +8,10 @@ const { contextBridge, ipcRenderer } = require("electron")
 const EVENTS = [
     "app:notice",
     "app:protocol",
+    "app:review",
     "auth:changed",
     "auth:login-result",
-    "bee2:progress",
     "packages:changed",
-    "packages:import-progress",
     "packages:progress",
     "publish:progress",
 ]
@@ -52,18 +51,13 @@ contextBridge.exposeInMainWorld("beepm", {
         discardPlan: call("packages:discard-plan"),
         uninstall: call("packages:uninstall"),
         outdated: call("packages:outdated"),
-        pickImport: call("packages:pick-import"),
-        importScan: call("packages:import-scan"),
-        importApply: call("packages:import-apply"),
-        importSources: call("packages:import-sources"),
-        removeLocal: call("packages:remove-local"),
     },
     bee2: {
         status: call("bee2:status"),
-        releases: call("bee2:releases"),
-        setup: call("bee2:setup"),
-        hook: call("bee2:hook"),
-        unhook: call("bee2:unhook"),
+        pickFolder: call("bee2:pick-folder"),
+        setFolder: call("bee2:set-folder"),
+        check: call("bee2:check"),
+        resolve: call("bee2:resolve"),
     },
     publish: {
         pick: call("publish:pick"),
@@ -92,7 +86,7 @@ contextBridge.exposeInMainWorld("beepm", {
         restorePackage: call("admin:restore-package"),
     },
 
-    /** The update question's window (src/components/UpdateToast.jsx) answering. */
+    /** A corner question's window (src/components/UpdateToast.jsx) answering. */
     toast: {
         answer: call("toast:answer"),
     },

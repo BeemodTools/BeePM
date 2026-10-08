@@ -59,18 +59,22 @@ export default function BrowseView({ query, reloadKey, onNavigate }) {
 
     return (
         <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
-            {bee2 && !bee2.error && !bee2.bee2?.version && (
+            {bee2 && !bee2.error && !bee2.dir && (
                 <Alert
-                    severity="info"
+                    severity="warning"
                     sx={{ mb: 1 }}
                     action={
                         <Button color="inherit" size="small" onClick={() => onNavigate("settings")}>
-                            Set up BEE2
+                            Settings
                         </Button>
                     }
                 >
-                    BeePM doesn't know your BEE2 version yet, so it can't tell which packages work
-                    with it.
+                    Choose where BEE2 is installed to install packages.
+                </Alert>
+            )}
+            {bee2?.dir && bee2.found !== false && !bee2.version && (
+                <Alert severity="info" sx={{ mb: 1 }}>
+                    Open BEE2 once so BeePM knows its version and which packages work with it.
                 </Alert>
             )}
 

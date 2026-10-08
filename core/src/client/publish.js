@@ -82,8 +82,8 @@ export async function publishPrepared(api, prepared, { onProgress } = {}) {
 
 /**
  * Suggests a bee-package.json for a package folder or .bee_pack, from its info.txt:
- * name and title from "Name", and dependencies from "Prerequisites" (BEE2's own packages
- * become @beemod/<ID>; others are looked up in the registry by ID).
+ * name and title from "Name", and dependencies from "Prerequisites" (looked up in the registry
+ * by ID; ones that aren't on BeePM, like BEE2's own packages, become @beemod/<ID>).
  * If a package with the same BEE2 ID is already published (IDs are unique), this is a new
  * version of it: its name is suggested, with the version after its newest one.
  * Returns { manifest, existing, published } where existing is the current bee-package.json,
@@ -107,10 +107,9 @@ export async function suggestManifest(ctx, input, { handle = null, bee2Version =
     let name = suggestHandle(title).slice(0, 64)
     if (!PACKAGE_NAME_RE.test(name)) name = info.id.toLowerCase().replace(/_/g, "-")
 
-    const base = new Set(ctx.basePackages ?? [])
     const dependencies = {}
     for (const id of info.prerequisites) {
-        if (base.has(id) || !ctx.api) {
+        if (!ctx.api) {
             dependencies[`@${BUILTIN_SCOPE}/${id}`] = "*"
             continue
         }

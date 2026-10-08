@@ -4,7 +4,7 @@
  * fetch, the way someone clicking through the pages would.
  */
 import assert from "node:assert/strict"
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { access, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises"
 import net from "node:net"
 import os from "node:os"
 import path from "node:path"
@@ -118,7 +118,19 @@ async function finishInBrowser(url, username, handle) {
         headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({ csrf, handle }),
     })
-    assert.equal(res.status, 200)
+    assert.equal(res.status, 200, res.status === 200 ? "" : await res.text())
+}
+
+/** A BEE2 folder: BEE2.exe, a log that says its version, and a packages folder. */
+async function fakeBee2(folder) {
+    await mkdir(path.join(folder, "packages"), { recursive: true })
+    await mkdir(path.join(folder, "logs"), { recursive: true })
+    await writeFile(path.join(folder, "BEE2.exe"), "")
+    await writeFile(
+        path.join(folder, "logs", "bee2.log"),
+        '[INFO] BEE2_launch.<module>(): Running "bee2", version 2.4.46.1 64-bit:\n',
+    )
+    return folder
 }
 
 test("logging in from the app: browser login, saved login, logout", async () => {
@@ -206,6 +218,11 @@ test("publish from a folder, find it, install it, uninstall it", async () => {
         ["@maker/maker-items"],
     )
 
+    // Installing needs BEE2's folder: packages go in a "beepm" folder in its packages folder
+    const unset = await backend.invoke("packages:plan", ["@maker/maker-items"])
+    assert.equal(unset.code, "bee2_not_set")
+    const bee2 = await fakeBee2(path.join(dir, "BEE2"))
+    assert.equal((await backend.invoke("bee2:set-folder", bee2)).ok, true)
     const plan = await backend.invoke("packages:plan", ["@maker/maker-items"])
     assert.equal(plan.ok, true, plan.error)
     assert.deepEqual(
@@ -214,14 +231,12 @@ test("publish from a folder, find it, install it, uninstall it", async () => {
     )
     const applied = await backend.invoke("packages:apply", plan.planId)
     assert.equal(applied.ok, true, applied.error)
-    await access(path.join(env.BEEPM_HOME, "packages", "maker@maker-items.bee_pack"))
+    await access(path.join(bee2, "packages", "beepm", "maker@maker-items.bee_pack"))
     assert.ok(Object.keys((await backend.invoke("packages:installed")).packages).length === 1)
 
     const removed = await backend.invoke("packages:uninstall", ["@maker/maker-items"])
     assert.equal(removed.ok, true, removed.error)
-    await assert.rejects(
-        access(path.join(env.BEEPM_HOME, "packages", "maker@maker-items.bee_pack")),
-    )
+    await assert.rejects(access(path.join(bee2, "packages", "beepm", "maker@maker-items.bee_pack")))
     const again = await backend.invoke("packages:uninstall", ["@maker/maker-items"])
     assert.equal(again.ok, false)
 
@@ -463,93 +478,72 @@ test(
     },
 )
 
-test("importing from this PC: packages on BeePM come from there, the rest are copied in", async () => {
-    const { backend, events, nextEvent } = await startBackend()
-    const phases = () =>
-        new Set(
-            events
-                .splice(0)
-                .flatMap((e) =>
-                    e.channel === "packages:import-progress" ? [e.payload.phase] : [],
-                ),
-        )
+test("the BEE2 check: duplicates and packages that are on BeePM, fixed once BEE2 is closed", async () => {
+    const bee2 = { running: false }
+    const { backend, nextEvent } = await startBackend({
+        home: path.join(dir, "check-home"),
+        bee2Process: { isRunning: async () => bee2.running, findProgram: async () => null },
+    })
     const started = await backend.invoke("auth:login")
-    await finishInBrowser(started.url, "Importer", "importer")
+    await finishInBrowser(started.url, "Sorter", "sorter")
     assert.equal((await nextEvent("auth:login-result")).ok, true)
-
-    // A package on BeePM...
-    const published = path.join(dir, "importer-items")
+    const published = path.join(dir, "sorter-items")
     await mkdir(published, { recursive: true })
     await writeFile(
         path.join(published, "info.txt"),
-        '"ID" "IMPORTER_ITEMS"\n"Name" "Importer Items"\n',
+        '"ID" "SORTER_ITEMS"\n"Name" "Sorter Items"\n',
     )
     await writeFile(
         path.join(published, "bee-package.json"),
-        JSON.stringify({ name: "importer-items", version: "1.0.0" }),
+        JSON.stringify({ name: "sorter-items", version: "1.0.0" }),
     )
     const prepared = await backend.invoke("publish:prepare", published)
     assert.equal((await backend.invoke("publish:upload", prepared.id)).ok, true)
 
-    // ...and a folder of packages on this PC: a copy of that one, and one of the user's own
-    const saved = path.join(dir, "saved-packages")
-    await mkdir(path.join(saved, "my-own"), { recursive: true })
-    await writeFile(
-        path.join(saved, "copy.bee_pack"),
-        await zipBytes({ "info.txt": '"ID" "IMPORTER_ITEMS"\n"Name" "Old copy"\n' }),
-    )
-    await writeFile(path.join(saved, "my-own", "info.txt"), '"ID" "MY_OWN"\n"Name" "My Own"\n')
+    // BEE2, with a package in it twice, and the user's own copy of the one on BeePM
+    const folder = await fakeBee2(path.join(dir, "check-bee2", "BEE2"))
+    const packages = path.join(folder, "packages")
+    const zip = (id) => zipBytes({ "info.txt": `"ID" "${id}"\n"Name" "Twice"\n` })
+    const older = path.join(packages, "twice_old.bee_pack")
+    await writeFile(older, await zip("TWICE"))
+    await utimes(older, new Date(Date.now() - 60000), new Date(Date.now() - 60000))
+    await writeFile(path.join(packages, "twice.bee_pack"), await zip("TWICE"))
+    await writeFile(path.join(packages, "sorter_own.bee_pack"), await zip("SORTER_ITEMS"))
 
-    events.length = 0
-    const scan = await backend.invoke("packages:import-scan", saved)
-    assert.equal(scan.ok, true, scan.error)
+    assert.equal((await backend.invoke("bee2:check")).code, "bee2_not_set")
+    const chosen = await backend.invoke("bee2:set-folder", packages) // its packages folder will do
+    assert.deepEqual(chosen, { ok: true, dir: folder, version: "2.4.46.1", moved: 0 })
+    const status = await backend.invoke("bee2:status")
+    assert.equal(status.packagesDir, path.join(packages, "beepm"))
+
+    const check = await backend.invoke("bee2:check")
+    assert.equal(check.ok, true, check.error)
     assert.deepEqual(
-        scan.items.map((item) => [item.name, item.action, item.package]),
-        [
-            ["Old copy", "beepm", "@importer/importer-items"],
-            ["My Own", "local", null],
-        ],
+        check.duplicates.packages.map((g) => [g.id, g.copies.map((c) => c.file)]),
+        [["TWICE", ["twice.bee_pack", "twice_old.bee_pack"]]],
     )
-    assert.deepEqual([...phases()], ["read", "check"]) // the window's progress bar
-    const done = await backend.invoke("packages:import-apply", scan.importId)
-    assert.equal(done.ok, true, done.error)
-    assert.deepEqual(done.installed, ["@importer/importer-items@1.0.0"])
-    assert.deepEqual(done.imported, ["My Own"])
-    assert.deepEqual([...phases()], ["copy", "download"])
-
-    const { packages, local } = await backend.invoke("packages:installed")
-    assert.ok(packages["@importer/importer-items"])
-    assert.equal(local.MY_OWN.name, "My Own")
-    await access(path.join(env.BEEPM_HOME, "packages", "my_own.local.bee_pack"))
-
-    assert.equal((await backend.invoke("packages:remove-local", "MY_OWN")).ok, true)
-    await assert.rejects(access(path.join(env.BEEPM_HOME, "packages", "my_own.local.bee_pack")))
-    assert.deepEqual((await backend.invoke("packages:installed")).local, {})
-})
-
-test("while BEE2 is hooked, Import offers the packages folder BEE2 used before", async () => {
-    // BEE2's setting was "packages/": the folder next to BEE2.exe
-    const home = path.join(dir, "sources-home")
-    const bee2Folder = path.join(dir, "BEE2_4.46.0_win")
-    await mkdir(path.join(bee2Folder, "packages"), { recursive: true })
-    await mkdir(path.join(home, "config"), { recursive: true })
-    await writeFile(
-        path.join(home, "config", "config.json"),
-        JSON.stringify({ hook: { originalPackageDir: "packages/", hookedAt: "2026-10-08" } }),
+    assert.deepEqual(
+        check.onBeepm.map((p) => [p.id, p.package, p.file]),
+        [["SORTER_ITEMS", "@sorter/sorter-items", "sorter_own.bee_pack"]],
     )
-    const bee2 = { running: false }
-    const bee2Process = {
-        isRunning: async () => bee2.running,
-        findProgram: async () => path.join(bee2Folder, "BEE2.exe"),
-    }
-    const { backend } = await startBackend({ home, bee2Process })
-    const sources = async () => (await backend.invoke("packages:import-sources")).folders
 
-    assert.deepEqual(await sources(), []) // BeePM hasn't seen BEE2 run, so it can't tell where
+    // BEE2 has the files open: the window offers to close it
     bee2.running = true
-    assert.deepEqual(await sources(), [path.join(bee2Folder, "packages")])
+    const request = { reviewId: check.reviewId, adopt: ["SORTER_ITEMS"] }
+    assert.equal((await backend.invoke("bee2:resolve", request)).code, "bee2_running")
     bee2.running = false
-    assert.deepEqual(await sources(), [path.join(bee2Folder, "packages")]) // remembered
+    const fixed = await backend.invoke("bee2:resolve", request)
+    assert.equal(fixed.ok, true, fixed.error)
+    assert.deepEqual(fixed.removed, [older]) // the newest copy is kept
+    assert.deepEqual(fixed.installed, ["@sorter/sorter-items@1.0.0"])
+    assert.deepEqual(fixed.replaced, [
+        { name: "@sorter/sorter-items", files: ["sorter_own.bee_pack"] },
+    ])
+    await access(path.join(packages, "beepm", "sorter@sorter-items.bee_pack"))
+    await access(path.join(dir, "check-home", "replaced", "sorter_own.bee_pack")) // kept, not gone
+
+    const after = await backend.invoke("bee2:check")
+    assert.deepEqual([after.duplicates.packages, after.onBeepm], [[], []])
 })
 
 test("settings: running in the background, and updates not to ask about again", async () => {

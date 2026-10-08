@@ -1,19 +1,31 @@
-import { access, rename, rm } from "node:fs/promises"
+import { mkdir, rename, rm } from "node:fs/promises"
 import path from "node:path"
 import semver from "semver"
 import { isCompatible } from "../compat.js"
 import { BUILTIN_SCOPE, formatName, normalizeBeeId, parseName, parseSpec } from "../names.js"
 import { hashFile } from "../pack.js"
+import { scanBee2 } from "./check.js"
 import { downloadFile } from "./download.js"
-import { readJson, replaceFile } from "./files.js"
+import { exists, freePath, moveFile, readJson } from "./files.js"
 import { packageFileName } from "./paths.js"
-import { refreshBaseIds } from "./bee2.js"
-import { loadConfig, loadInstalled, saveConfig, saveInstalled } from "./state.js"
+import { loadConfig, loadInstalled, saveInstalled } from "./state.js"
 
 /** An install/uninstall problem with a message meant for the user. */
-export class InstallError extends Error {}
+export class InstallError extends Error {
+    constructor(message, { code } = {}) {
+        super(message)
+        if (code) this.code = code
+    }
+}
 
 const isBuiltin = (name) => parseName(name)?.scope === BUILTIN_SCOPE
+
+/** Packages go in BEE2's packages folder, so BeePM has to know where BEE2 is. */
+function requireBee2(paths) {
+    if (!paths.packages) {
+        throw new InstallError("Choose where BEE2 is installed first.", { code: "bee2_not_set" })
+    }
+}
 
 /** Turns what the user typed into { name: "@scope/name", range } (bare names are looked up). */
 export async function resolveSpec(api, spec) {
@@ -76,16 +88,25 @@ function describeWants(wants) {
  *   specs   what the user asked for; empty with update = true means "update everything"
  *   update  pick the newest allowed versions instead of keeping installed ones
  * Returns { steps, warnings }. Each step is
- *   { name, from, to, range, explicit, sha256, size, beeId, dependencies, compatibleWith, deprecated }
- * in dependency order (dependencies first). Throws InstallError on conflicts.
+ *   { name, from, to, range, explicit, sha256, size, beeId, dependencies, compatibleWith,
+ *     replaces }
+ * in dependency order (dependencies first). `replaces` lists the user's own copies of it in
+ * BEE2's packages folder (same BEE2 ID): BEE2 can't load both, so they're moved to BeePM's
+ * backups. Throws InstallError on conflicts.
  */
 export async function planInstall(ctx, specs, { update = false, force = false } = {}) {
     const { api, paths } = ctx
+    requireBee2(paths)
     const config = await loadConfig(paths)
-    if (await refreshBaseIds(paths, config)) await saveConfig(paths, config)
     const installed = await loadInstalled(paths)
     const bee2Version = config.bee2?.version ?? null
-    const basePackages = new Set(config.bee2?.basePackages ?? [])
+    // What BEE2 has besides BeePM's packages: BEE2 ID -> files
+    const own = new Map()
+    for (const pkg of await scanBee2(paths, { skipBeepm: true })) {
+        if (!pkg.id) continue
+        if (!own.has(pkg.id)) own.set(pkg.id, [])
+        own.get(pkg.id).push(pkg.path)
+    }
     const warnings = []
 
     const docs = new Map()
@@ -170,7 +191,7 @@ export async function planInstall(ctx, specs, { update = false, force = false } 
 
         if (isBuiltin(name)) {
             const id = parseName(name).name
-            if (basePackages.size && !basePackages.has(id)) {
+            if (own.size && !own.has(id)) {
                 warnings.push(
                     `${name} is one of BEE2's own packages, but it isn't in your BEE2 packages folder.`,
                 )
@@ -235,11 +256,6 @@ export async function planInstall(ctx, specs, { update = false, force = false } 
         if (!changed.has(name)) return
         const { version, explicit, range } = selected.get(name)
         const info = docs.get(name).versions[version]
-        if (basePackages.has(docs.get(name).beeId)) {
-            throw new InstallError(
-                `${name} uses the BEE2 ID ${docs.get(name).beeId}, which one of BEE2's own packages already has.`,
-            )
-        }
         if (info.deprecated || docs.get(name).deprecated) {
             warnings.push(`${name} is deprecated: ${info.deprecated || docs.get(name).deprecated}`)
         }
@@ -263,6 +279,7 @@ export async function planInstall(ctx, specs, { update = false, force = false } 
             displayName: docs.get(name).displayName,
             dependencies: info.dependencies ?? {},
             compatibleWith: info.compatibleWith,
+            replaces: own.get(docs.get(name).beeId) ?? [],
         })
     }
     for (const name of selected.keys()) visit(name)
@@ -276,11 +293,13 @@ export async function planInstall(ctx, specs, { update = false, force = false } 
               )
               .map(([n]) => n)
         : []
-    // BeePM's packages come first: one with the same BEE2 ID as a local package replaces it
+    // BeePM's packages come first: BEE2 can't load the user's own copy too
     for (const step of steps) {
-        const local = installed.local[step.beeId]
-        if (local)
-            warnings.push(`${step.name} replaces your local copy of ${local.name ?? step.name}.`)
+        if (!step.replaces.length) continue
+        const files = step.replaces.map((file) => path.basename(file)).join(", ")
+        warnings.push(
+            `${step.name} replaces ${files} in BEE2's packages folder (kept in BeePM's backups).`,
+        )
     }
     return { steps, warnings: [...new Set(warnings)], markExplicit }
 }
@@ -306,14 +325,18 @@ async function pruneOrphans(paths, installed) {
 }
 
 /**
- * Downloads and installs the steps of a plan. Each file is checked against its
- * SHA-256 before it replaces the old one.
+ * Downloads and installs the steps of a plan into BeePM's folder in BEE2's packages folder.
+ * Each file is checked against its SHA-256 before it replaces the old one, and the user's own
+ * copies a step replaces are moved to BeePM's backups. Returns { installed, removed, replaced }
+ * (replaced: [{ name, files }]).
  * onProgress({ index, count, name, version, received, total })
  */
 export async function applyPlan(ctx, plan, { onProgress } = {}) {
     const { api, paths, fetch = globalThis.fetch } = ctx
+    requireBee2(paths)
+    await mkdir(paths.packages, { recursive: true })
     const installed = await loadInstalled(paths)
-    const replacedLocal = [] // names of local packages these replaced (see local.js)
+    const replaced = []
     for (const name of plan.markExplicit ?? []) {
         if (installed.packages[name]) installed.packages[name].explicit = true
     }
@@ -337,13 +360,14 @@ export async function applyPlan(ctx, plan, { onProgress } = {}) {
         if (previous?.file && previous.file !== file) {
             await rm(path.join(paths.packages, previous.file), { force: true })
         }
-        // A local package with the same BEE2 ID gives way (BEE2 can't load both)
-        const local = installed.local[step.beeId]
-        if (local) {
-            await rm(path.join(paths.packages, local.file), { force: true })
-            delete installed.local[step.beeId]
-            replacedLocal.push(local.name ?? step.beeId)
+        // The user's own copies give way (BEE2 can't load both), kept in BeePM's backups
+        const moved = []
+        for (const own of step.replaces ?? []) {
+            if (!(await exists(own))) continue
+            await moveFile(own, await freePath(paths.replaced, path.basename(own)))
+            moved.push(path.basename(own))
         }
+        if (moved.length) replaced.push({ name: step.name, files: moved })
         installed.packages[step.name] = {
             version: step.to,
             range: step.range,
@@ -359,7 +383,7 @@ export async function applyPlan(ctx, plan, { onProgress } = {}) {
     }
     const removed = await pruneOrphans(paths, installed)
     await saveInstalled(paths, installed)
-    return { installed: plan.steps, removed, replacedLocal }
+    return { installed: plan.steps, removed, replaced }
 }
 
 /** Plans and applies in one go. Returns { installed, removed, warnings }. */
@@ -375,6 +399,7 @@ export async function install(ctx, specs, options = {}) {
  */
 export async function uninstall(ctx, specs, { force = false } = {}) {
     const { paths } = ctx
+    requireBee2(paths)
     const installed = await loadInstalled(paths)
     const targets = specs.map((spec) => findInstalled(installed, spec))
 
@@ -447,27 +472,22 @@ export async function outdated(ctx) {
     )
 }
 
-const exists = (file) =>
-    access(file).then(
-        () => true,
-        () => false,
-    )
-
 /**
  * Takes over packages installed by earlier BeePM versions (installed_packages.json, files named
- * <author>_<ID>.bee_pack): finds each one in the registry by BEE2 ID, renames the file,
- * and records it. Runs once; the old file is kept as installed_packages.old.json.
+ * <author>_<ID>.bee_pack in the folder BEE2 was hooked to): finds each one in the registry by
+ * BEE2 ID, moves the file into BeePM's folder in BEE2's packages folder, and records it. Runs
+ * once BeePM knows where BEE2 is; the old list is kept as installed_packages.old.json.
  */
 export async function adoptLegacyInstalls(ctx) {
     const { api, paths } = ctx
     const legacy = await readJson(paths.legacyInstalled, null)
-    if (!legacy?.packages) return { adopted: [], unknown: [] }
+    if (!legacy?.packages || !paths.packages) return { adopted: [], unknown: [] }
 
     const installed = await loadInstalled(paths)
     const adopted = []
     const unknown = []
     for (const [beeId, entry] of Object.entries(legacy.packages)) {
-        const oldFile = path.join(paths.packages, `${entry.author}_${beeId}.bee_pack`)
+        const oldFile = path.join(paths.hookedPackages, `${entry.author}_${beeId}.bee_pack`)
         if (!(await exists(oldFile))) continue
         let names = []
         try {
@@ -484,7 +504,7 @@ export async function adoptLegacyInstalls(ctx) {
         }
         const file = packageFileName(name)
         const document = await api.packument(name).catch(() => null)
-        await replaceFile(oldFile, path.join(paths.packages, file))
+        await moveFile(oldFile, path.join(paths.packages, file))
         installed.packages[name] = {
             version: entry.version,
             range: "*",

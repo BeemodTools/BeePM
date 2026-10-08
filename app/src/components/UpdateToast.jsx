@@ -3,13 +3,81 @@ import CloseIcon from "@mui/icons-material/Close"
 import Brand from "./Brand.jsx"
 
 /**
- * The small window in the bottom-right corner (backend/main.js showToast). "update" asks about
- * an update when BEE2 opens; "close" asks to close BEE2 for the updates picked, since BEE2 has
- * the package files open. Closing it is "Not now" / "When I close it".
+ * What a corner question says, and its answers: [label, answer, style]. The first answer is
+ * the main one; "quiet" ones go to the right. Closing the window is always "later".
  */
-export default function UpdateToast({ kind = "update", name, from, to }) {
+function question({ kind, name, from, to, count, folder, switching }) {
+    switch (kind) {
+        case "use-bee2":
+            return {
+                title: switching ? "Switch BeePM to this BEE2?" : "Use this BEE2 with BeePM?",
+                text: folder,
+                answers: [
+                    [switching ? "Switch" : "Use it", "use"],
+                    ["Not now", "later"],
+                    ["Don't ask again", "never", "quiet"],
+                ],
+            }
+        case "close":
+            return {
+                title: "Close BEE2 to finish?",
+                text: "Save your work in BEE2 first.",
+                answers: [
+                    ["Close BEE2", "now"],
+                    ["When I close it", "later"],
+                ],
+            }
+        case "duplicates":
+            return {
+                title: "Duplicate packages in BEE2",
+                text:
+                    count === 1
+                        ? "BEE2 can't load them together."
+                        : `${count} clashes. BEE2 can't load these together.`,
+                answers: [
+                    ["Delete duplicates", "delete"],
+                    ["Choose", "choose"],
+                ],
+            }
+        case "adopt":
+            return count > 1
+                ? {
+                      title: `${count} of your packages are on BeePM`,
+                      text: "Use BeePM's versions? They get updates.",
+                      answers: [
+                          ["Use BeePM's", "use"],
+                          ["Choose", "choose"],
+                          ["Keep mine", "keep", "quiet"],
+                      ],
+                  }
+                : {
+                      title: `Use BeePM's ${name}?`,
+                      text: "You have your own copy. BeePM's gets updates.",
+                      answers: [
+                          ["Use BeePM's", "use"],
+                          ["Keep mine", "keep"],
+                      ],
+                  }
+        default:
+            return {
+                title: `Update ${name}?`,
+                text: `${from} → ${to}`,
+                answers: [
+                    ["Update", "update"],
+                    ["Not now", "later"],
+                    ["Don't ask again", "never", "quiet"],
+                ],
+            }
+    }
+}
+
+/**
+ * The small window in the bottom-right corner (backend/main.js ask): what BeePM asks about when
+ * BEE2 opens (see backend/updateWatcher.js). Closing it is "later".
+ */
+export default function UpdateToast(props) {
     const answer = (value) => window.beepm?.toast?.answer(value)
-    const close = kind === "close"
+    const { title, text, answers } = question(props)
     return (
         <Box
             sx={{
@@ -31,7 +99,7 @@ export default function UpdateToast({ kind = "update", name, from, to }) {
                 </Typography>
                 <IconButton
                     size="small"
-                    aria-label={close ? "When I close it" : "Not now"}
+                    aria-label="Later"
                     onClick={() => answer("later")}
                     sx={{ mr: -1, color: "#888" }}
                 >
@@ -39,38 +107,25 @@ export default function UpdateToast({ kind = "update", name, from, to }) {
                 </IconButton>
             </Box>
             <Typography noWrap sx={{ color: "#fff", fontWeight: 600, mt: 0.5 }}>
-                {close ? "Close BEE2 to update?" : `Update ${name}?`}
+                {title}
             </Typography>
-            <Typography variant="body2" noWrap sx={{ color: "#888" }}>
-                {close ? "Save your work in BEE2 first." : `${from} → ${to}`}
+            <Typography variant="body2" noWrap title={text} sx={{ color: "#888" }}>
+                {text}
             </Typography>
             <Box sx={{ display: "flex", gap: 1, mt: "auto" }}>
-                {close ? (
-                    <>
-                        <Button size="small" variant="contained" onClick={() => answer("now")}>
-                            Close BEE2
-                        </Button>
-                        <Button size="small" variant="outlined" onClick={() => answer("later")}>
-                            When I close it
-                        </Button>
-                    </>
-                ) : (
-                    <>
-                        <Button size="small" variant="contained" onClick={() => answer("update")}>
-                            Update
-                        </Button>
-                        <Button size="small" variant="outlined" onClick={() => answer("later")}>
-                            Not now
-                        </Button>
-                        <Button
-                            size="small"
-                            onClick={() => answer("never")}
-                            sx={{ ml: "auto", color: "#888" }}
-                        >
-                            Don't ask again
-                        </Button>
-                    </>
-                )}
+                {answers.map(([label, value, style], index) => (
+                    <Button
+                        key={value}
+                        size="small"
+                        variant={
+                            style === "quiet" ? "text" : index === 0 ? "contained" : "outlined"
+                        }
+                        onClick={() => answer(value)}
+                        sx={style === "quiet" ? { ml: "auto", color: "#888" } : undefined}
+                    >
+                        {label}
+                    </Button>
+                ))}
             </Box>
         </Box>
     )

@@ -1,35 +1,38 @@
 import assert from "node:assert/strict"
 import { createHash } from "node:crypto"
-import { access, mkdir, readFile, writeFile } from "node:fs/promises"
+import { access, copyFile, mkdir, readFile, utimes, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { after, before, test } from "node:test"
 import {
     adoptLegacyInstalls,
     applyPlan,
+    bee2Info,
     bee2Paths,
-    bee2Status,
     beepmPaths,
-    findPackages,
+    checkBee2Packages,
+    createClientContext,
+    findBee2Folder,
     getGithubJson,
     getIniValue,
-    hookBee2,
-    importLocal,
-    installBasePackages,
     InstallError,
+    leaveHook,
     listGithubReleases,
     listGithubRepos,
     loadInstalled,
     packageFileName,
-    planImport,
-    suggestManifest,
     planInstall,
+    readBee2Version,
     removeIniKey,
+    removePackageFiles,
     saveConfig,
     saveInstalled,
+    setBee2Folder,
     setIniValue,
-    unhookBee2,
+    suggestManifest,
+    useBee2Folder,
 } from "../src/client/index.js"
-import { readPack } from "../src/pack.js"
+import { duplicateRemovals, hasDuplicates } from "../src/duplicates.js"
+import { hashFile } from "../src/pack.js"
 import { infoTxt, makeZip, tempDir } from "./helpers.js"
 
 // Never close the real BEE2 while testing
@@ -72,51 +75,6 @@ test("config.cfg edits change one line and keep everything else", () => {
     assert.equal(getIniValue("[Other]\npackage = no\n", "Directories", "package"), null)
 })
 
-test("hook remembers the old folder and unhook puts it back", async () => {
-    const env = {
-        BEEPM_HOME: path.join(tmp.dir, "home1"),
-        BEE2_CONFIG_DIR: path.join(tmp.dir, "bee2-1"),
-    }
-    const paths = beepmPaths(env)
-    const bee2 = bee2Paths(env)
-    const config = {}
-
-    await assert.rejects(hookBee2(paths, bee2, config), /Install BEE2 and open it once/)
-
-    await mkdir(bee2.configDir, { recursive: true })
-    const original = "[Directories]\npackage = ../packages/\nmusic = y\n"
-    await writeFile(bee2.configFile, original)
-
-    assert.equal((await hookBee2(paths, bee2, config)).changed, true)
-    assert.equal(config.hook.originalPackageDir, "../packages/")
-    assert.equal((await bee2Status(paths, bee2)).hooked, true)
-    assert.equal((await hookBee2(paths, bee2, config)).changed, false) // already hooked
-
-    const result = await unhookBee2(paths, bee2, config)
-    assert.equal(result.restored, "../packages/")
-    assert.equal(await readFile(bee2.configFile, "utf8"), original)
-    assert.equal(config.hook, undefined)
-})
-
-test("unhook without a saved value removes the key, or uses the old CLI's backup", async () => {
-    const env = {
-        BEEPM_HOME: path.join(tmp.dir, "home2"),
-        BEE2_CONFIG_DIR: path.join(tmp.dir, "bee2-2"),
-    }
-    const paths = beepmPaths(env)
-    const bee2 = bee2Paths(env)
-    await mkdir(bee2.configDir, { recursive: true })
-    await writeFile(bee2.configFile, `[Directories]\npackage = ${paths.packages}\n`)
-
-    await writeFile(`${bee2.configFile}.backup`, "[Directories]\npackage = D:\\BEE2\\packages\n")
-    assert.equal((await unhookBee2(paths, bee2, {})).restored, "D:\\BEE2\\packages")
-
-    await writeFile(bee2.configFile, `[Directories]\npackage = ${paths.packages}\n`)
-    await writeFile(`${bee2.configFile}.backup`, "[General]\n")
-    await unhookBee2(paths, bee2, {})
-    assert.equal(await readFile(bee2.configFile, "utf8"), "[Directories]\n")
-})
-
 // ---------- planner ----------
 
 const v = (version, extra = {}) => ({
@@ -139,7 +97,7 @@ const docOf = (name, beeId, versions) => ({
 function fakeContext(name, docs) {
     const env = { BEEPM_HOME: path.join(tmp.dir, name) }
     return {
-        paths: beepmPaths(env),
+        paths: useBee2Folder(beepmPaths(env), path.join(tmp.dir, name, "BEE2")),
         api: {
             async packument(n) {
                 if (!docs[n]) throw Object.assign(new Error("nope"), { status: 404 })
@@ -169,7 +127,7 @@ const docs = {
 test("planInstall resolves dependencies, skips yanked and BEE2-incompatible versions", async () => {
     const ctx = fakeContext("plan1", docs)
     await saveConfig(ctx.paths, {
-        bee2: { version: "2.4.45.2", basePackages: ["BEE2_CLEAN_STYLE"] },
+        bee2: { version: "2.4.45.2" },
     })
     const plan = await planInstall(ctx, ["app"])
     assert.deepEqual(
@@ -254,88 +212,6 @@ test("update moves packages to the newest version their ranges allow", async () 
         plan.steps.map((s) => `${s.from}->${s.to}`),
         ["1.0.0->1.5.0"],
     )
-})
-
-test("hook and unhook close BEE2 only when they change something", async () => {
-    const env = {
-        BEEPM_HOME: path.join(tmp.dir, "home4"),
-        BEE2_CONFIG_DIR: path.join(tmp.dir, "bee2-4"),
-    }
-    const paths = beepmPaths(env)
-    const bee2 = bee2Paths(env)
-    await mkdir(bee2.configDir, { recursive: true })
-    await writeFile(bee2.configFile, "[Directories]\npackage = ../packages/\n")
-    let closes = 0
-    const close = async () => {
-        closes++
-        return true
-    }
-    const config = {}
-    assert.deepEqual(await hookBee2(paths, bee2, config, { close }), {
-        changed: true,
-        previous: "../packages/",
-        closedBee2: true,
-    })
-    assert.equal((await hookBee2(paths, bee2, config, { close })).closedBee2, false) // already hooked
-    assert.equal(closes, 1)
-    assert.equal((await unhookBee2(paths, bee2, config, { close })).closedBee2, true)
-    assert.equal((await unhookBee2(paths, bee2, config, { close })).changed, false)
-    assert.equal(closes, 2)
-})
-
-test("setup downloads the packages before the music and announces every download first", async () => {
-    const env = { BEEPM_HOME: path.join(tmp.dir, "home5") }
-    const paths = beepmPaths(env)
-    // A BEE2-items release whose zips each hold one .bee_pack
-    const inner = path.join(tmp.dir, "inner.bee_pack")
-    await makeZip(inner, { "info.txt": '"ID" "BEE2_CLEAN_STYLE"' })
-    const packagesZip = await makeZip(path.join(tmp.dir, "packages.zip"), {
-        "clean_style.bee_pack": await readFile(inner),
-    })
-    const musicZip = await makeZip(path.join(tmp.dir, "music.zip"), {
-        "music.bee_pack": await readFile(inner),
-    })
-    const files = { "https://dl/music.zip": musicZip, "https://dl/packages.zip": packagesZip }
-    const sizes = {}
-    for (const [url, file] of Object.entries(files)) sizes[url] = (await readFile(file)).length
-    const fakeFetch = async (url) => {
-        if (String(url).includes("BEE2-items/releases")) {
-            return Response.json([
-                {
-                    tag_name: "v4.46.0",
-                    assets: [
-                        {
-                            name: "BEE2_v4.46.0_music.zip",
-                            size: sizes["https://dl/music.zip"],
-                            browser_download_url: "https://dl/music.zip",
-                        },
-                        {
-                            name: "BEE2_v4.46.1_packages.zip",
-                            size: sizes["https://dl/packages.zip"],
-                            browser_download_url: "https://dl/packages.zip",
-                        },
-                    ],
-                },
-            ])
-        }
-        return new Response(await readFile(files[url]))
-    }
-    const events = []
-    const config = {}
-    await installBasePackages(paths, config, {
-        version: "2.4.46.1",
-        fetch: fakeFetch,
-        close: async () => true,
-        onProgress: (p) => events.push(p),
-    })
-    assert.deepEqual(
-        events[0].assets.map((a) => a.name),
-        ["BEE2_v4.46.1_packages.zip", "BEE2_v4.46.0_music.zip"],
-    )
-    assert.equal(events[1].step, "closed-bee2")
-    const downloads = [...new Set(events.filter((e) => e.step === "download").map((e) => e.asset))]
-    assert.deepEqual(downloads, ["BEE2_v4.46.1_packages.zip", "BEE2_v4.46.0_music.zip"])
-    assert.deepEqual(config.bee2.basePackages, ["BEE2_CLEAN_STYLE"])
 })
 
 test("GitHub: repos the account can publish from, and releases with a .bee_pack", async () => {
@@ -436,11 +312,14 @@ test("GitHub answers are reused for a while, and stand in when the hourly limit 
 })
 
 test("taking over old installs only accepts real package names from the registry", async () => {
-    const paths = beepmPaths({ BEEPM_HOME: path.join(tmp.dir, "adopt", "home") })
+    const paths = useBee2Folder(
+        beepmPaths({ BEEPM_HOME: path.join(tmp.dir, "adopt", "home") }),
+        path.join(tmp.dir, "adopt", "BEE2"),
+    )
     await mkdir(paths.configDir, { recursive: true })
-    await mkdir(paths.packages, { recursive: true })
-    await writeFile(path.join(paths.packages, "areng_GOOD_ITEMS.bee_pack"), "good")
-    await writeFile(path.join(paths.packages, "evil_EVIL_ITEMS.bee_pack"), "evil")
+    await mkdir(paths.hookedPackages, { recursive: true })
+    await writeFile(path.join(paths.hookedPackages, "areng_GOOD_ITEMS.bee_pack"), "good")
+    await writeFile(path.join(paths.hookedPackages, "evil_EVIL_ITEMS.bee_pack"), "evil")
     await writeFile(
         paths.legacyInstalled,
         JSON.stringify({
@@ -463,80 +342,8 @@ test("taking over old installs only accepts real package names from the registry
     assert.deepEqual(adopted, ["@areng/good-items"])
     assert.deepEqual(unknown, ["EVIL_ITEMS"])
     await access(path.join(paths.packages, "areng@good-items.bee_pack"))
-    await access(path.join(paths.packages, "evil_EVIL_ITEMS.bee_pack")) // left where it was
+    await access(path.join(paths.hookedPackages, "evil_EVIL_ITEMS.bee_pack")) // left where it was
     assert.throws(() => packageFileName("x/../../PWNED"), /isn't a package name/)
-})
-
-test("importing packages from this PC: BeePM's own first, and they replace local copies later", async () => {
-    const dir = path.join(tmp.dir, "import-from")
-    await mkdir(path.join(dir, "folder-pack"), { recursive: true })
-    await writeFile(path.join(dir, "folder-pack", "info.txt"), infoTxt("FOLDER_PACK"))
-    await writeFile(path.join(dir, "folder-pack", "notes.md"), "local packages keep every file")
-    await makeZip(path.join(dir, "mine.bee_pack"), { "info.txt": infoTxt("MY_PACK") })
-    await makeZip(path.join(dir, "published.zip"), { "info.txt": infoTxt("APP") })
-    await makeZip(path.join(dir, "clean.bee_pack"), { "info.txt": infoTxt("BEE2_CLEAN_STYLE") })
-    await writeFile(path.join(dir, "broken.bee_pack"), "not a zip")
-    await writeFile(path.join(dir, "readme.txt"), "not a package")
-    // In a folder that isn't a package itself (BEE2 looks in those too)
-    await mkdir(path.join(dir, "Signage"))
-    await makeZip(path.join(dir, "Signage", "signs.bee_pack"), { "info.txt": infoTxt("SIGNS") })
-
-    // On BeePM: @a/app has the ID APP, and @me/mine (below) has MY_PACK
-    const bytes = Buffer.from("the published copy")
-    const sha256 = createHash("sha256").update(bytes).digest("hex")
-    const all = {
-        ...docs,
-        "@me/mine": docOf("@me/mine", "MY_PACK", [v("1.0.0", { sha256, size: bytes.length })]),
-    }
-    const ctx = fakeContext("import", all)
-    ctx.api.lookup = async ({ beeId }) => ({
-        packages: beeId === "APP" ? ["@a/app"] : [],
-    })
-    ctx.api.downloadUrl = () => "https://dl.test/mine"
-    ctx.fetch = async () => new Response(bytes)
-    await saveConfig(ctx.paths, {
-        bee2: { version: "2.4.46.0", basePackages: ["BEE2_CLEAN_STYLE"] },
-    })
-
-    const reads = []
-    const lookups = []
-    const found = await findPackages(dir, { onProgress: (p) => reads.push(p) })
-    const { items, offline } = await planImport(ctx, found, { onProgress: (p) => lookups.push(p) })
-    assert.equal(offline, false)
-    assert.deepEqual(
-        Object.fromEntries(items.map((item) => [path.basename(item.path), item.action])),
-        {
-            "broken.bee_pack": "skip",
-            "clean.bee_pack": "skip",
-            "folder-pack": "local",
-            "mine.bee_pack": "local",
-            "published.zip": "beepm",
-            "signs.bee_pack": "local",
-        },
-    )
-    assert.equal(items.find((item) => item.action === "beepm").package, "@a/app")
-    // Every package read, then the registry asked about the ones not skipped
-    assert.deepEqual(reads.at(-1), { done: 6, total: 6 })
-    assert.deepEqual(lookups.at(-1), { done: 4, total: 4 })
-
-    // Copied in; a folder is zipped with all its files
-    for (const item of items.filter((i) => i.action === "local")) {
-        await importLocal(ctx.paths, item)
-    }
-    let installed = await loadInstalled(ctx.paths)
-    assert.deepEqual(Object.keys(installed.local).sort(), ["FOLDER_PACK", "MY_PACK", "SIGNS"])
-    const zipped = await readPack(path.join(ctx.paths.packages, "folder_pack.local.bee_pack"))
-    assert.ok(zipped.files.includes("notes.md"))
-
-    // Installing @me/mine from BeePM replaces the local copy with the same ID
-    const plan = await planInstall(ctx, ["@me/mine"])
-    assert.ok(plan.warnings.some((w) => w.includes("replaces your local copy")))
-    const result = await applyPlan(ctx, plan)
-    assert.deepEqual(result.replacedLocal, ["Test package"])
-    installed = await loadInstalled(ctx.paths)
-    assert.deepEqual(Object.keys(installed.local).sort(), ["FOLDER_PACK", "SIGNS"])
-    await assert.rejects(access(path.join(ctx.paths.packages, "my_pack.local.bee_pack")))
-    await access(path.join(ctx.paths.packages, "me@mine.bee_pack"))
 })
 
 test("suggestManifest continues a published package: its name, the next version", async () => {
@@ -557,4 +364,229 @@ test("suggestManifest continues a published package: its name, the next version"
     assert.equal(fresh.manifest.name, "@me/renamed-items")
     assert.equal(fresh.manifest.version, "1.0.0")
     assert.equal(fresh.published, null)
+})
+
+// ---------- BEE2's folder ----------
+
+/** A BEE2 folder: BEE2.exe, a log saying `version` (none: BEE2 hasn't run), packages/. */
+async function fakeBee2(dir, { version = "2.4.46.1" } = {}) {
+    await mkdir(path.join(dir, "packages"), { recursive: true })
+    await writeFile(path.join(dir, "BEE2.exe"), "")
+    if (version) {
+        await mkdir(path.join(dir, "logs"), { recursive: true })
+        await writeFile(
+            path.join(dir, "logs", "bee2.log"),
+            `[INFO] BEE2_launch.<module>(): Arguments: ['BEE2.exe']\n[INFO] BEE2_launch.<module>(): Running "bee2", version ${version} 64-bit:\n`,
+        )
+    }
+    return dir
+}
+
+/** A package file in a folder, with some items, last changed `ago` seconds ago. */
+async function fakePack(file, id, { items = [], ago = 0 } = {}) {
+    await mkdir(path.dirname(file), { recursive: true })
+    const blocks = items.map((item) => `"Item"\n{\n"ID" "${item}"\n}\n`).join("")
+    await makeZip(file, { "info.txt": infoTxt(id, blocks) })
+    const time = new Date(Date.now() - ago * 1000)
+    await utimes(file, time, time)
+    return file
+}
+
+test("BEE2's folder: found from what was picked, its version read from its log", async () => {
+    const bee2 = await fakeBee2(path.join(tmp.dir, "folder", "BEE2_4.46.0_win"))
+    assert.equal(await findBee2Folder(bee2), bee2)
+    assert.equal(await findBee2Folder(path.join(bee2, "packages")), bee2) // its packages folder
+    assert.equal(await findBee2Folder(path.join(bee2, "packages", "beepm")), bee2)
+    await assert.rejects(
+        findBee2Folder(path.join(tmp.dir, "folder")),
+        /Choose the folder BEE2.exe is in/,
+    )
+
+    assert.equal(await readBee2Version(bee2), "2.4.46.1")
+    const fresh = await fakeBee2(path.join(tmp.dir, "folder", "never-run"), { version: null })
+    assert.equal(await readBee2Version(fresh), null)
+
+    // Remembered in config.json: a new context installs into BeePM's folder in there
+    const env = { BEEPM_HOME: path.join(tmp.dir, "folder", "home") }
+    const ctx = await createClientContext({ env })
+    assert.equal(ctx.paths.packages, null)
+    assert.deepEqual(await setBee2Folder(ctx, path.join(bee2, "packages")), {
+        dir: bee2,
+        version: "2.4.46.1",
+        moved: 0,
+    })
+    const again = await createClientContext({ env })
+    assert.equal(again.paths.packages, path.join(bee2, "packages", "beepm"))
+    assert.deepEqual(await bee2Info(again), { dir: bee2, version: "2.4.46.1", found: true })
+
+    // Another BEE2: BeePM's packages come along, its version is that BEE2's (unknown here)
+    await fakePack(path.join(again.paths.packages, "a@items.bee_pack"), "ITEMS")
+    await saveInstalled(again.paths, {
+        packages: { "@a/items": { version: "1.0.0", file: "a@items.bee_pack", beeId: "ITEMS" } },
+    })
+    assert.deepEqual(await setBee2Folder(again, fresh), { dir: fresh, version: null, moved: 1 })
+    await access(path.join(fresh, "packages", "beepm", "a@items.bee_pack"))
+    await assert.rejects(access(path.join(bee2, "packages", "beepm"))) // emptied and gone
+})
+
+test("installing needs BEE2's folder, and replaces the user's own copy of a package", async () => {
+    const bytes = Buffer.from("the BeePM copy")
+    const sha256 = createHash("sha256").update(bytes).digest("hex")
+    const all = {
+        ...docs,
+        "@me/mine": docOf("@me/mine", "MY_PACK", [v("1.0.0", { sha256, size: bytes.length })]),
+    }
+    const unset = fakeContext("own0", all)
+    useBee2Folder(unset.paths, null)
+    await assert.rejects(planInstall(unset, ["@me/mine"]), { code: "bee2_not_set" })
+
+    const ctx = fakeContext("own1", all)
+    ctx.api.downloadUrl = () => "https://dl.test/mine"
+    ctx.fetch = async () => new Response(bytes)
+    const mine = await fakePack(
+        path.join(ctx.paths.bee2Dir, "packages", "Mine", "mine.bee_pack"),
+        "MY_PACK",
+    )
+
+    const plan = await planInstall(ctx, ["@me/mine"])
+    assert.deepEqual(plan.steps[0].replaces, [mine])
+    assert.match(plan.warnings[0], /replaces mine\.bee_pack in BEE2's packages folder/)
+    const result = await applyPlan(ctx, plan)
+    assert.deepEqual(result.replaced, [{ name: "@me/mine", files: ["mine.bee_pack"] }])
+    assert.equal(
+        await readFile(path.join(ctx.paths.packages, "me@mine.bee_pack"), "utf8"),
+        "the BeePM copy",
+    )
+    await assert.rejects(access(mine))
+    await access(path.join(ctx.paths.replaced, "mine.bee_pack")) // kept, not deleted
+})
+
+test("the BEE2 check finds duplicates and the user's packages that are on BeePM", async () => {
+    const ctx = fakeContext("check", docs)
+    const folder = path.join(ctx.paths.bee2Dir, "packages")
+    const oldA = await fakePack(path.join(folder, "a_old.bee_pack"), "A", {
+        items: ["ITEM_X"],
+        ago: 300,
+    })
+    const newA = await fakePack(path.join(folder, "New", "a.bee_pack"), "A", {
+        items: ["ITEM_X"],
+        ago: 10,
+    })
+    const b = await fakePack(path.join(folder, "b.bee_pack"), "B", {
+        items: ["item_x", "ITEM_Y"],
+        ago: 100,
+    })
+    await fakePack(path.join(folder, "c.bee_pack"), "C")
+    // Installed from BeePM, and the user's own copy of it too
+    const managed = await fakePack(path.join(ctx.paths.packages, "e@e.bee_pack"), "E", { ago: 50 })
+    const ownE = await fakePack(path.join(folder, "e.bee_pack"), "E", { ago: 20 })
+    await saveInstalled(ctx.paths, {
+        packages: {
+            "@e/e": { version: "1.0.0", explicit: true, file: "e@e.bee_pack", beeId: "E" },
+        },
+    })
+    ctx.api.lookup = async ({ beeId }) => ({ packages: beeId === "C" ? ["@c/c"] : [] })
+
+    const check = await checkBee2Packages(ctx)
+    assert.deepEqual(
+        check.duplicates.packages.map((g) => [g.id, g.copies.map((c) => c.path)]),
+        [
+            ["A", [newA, oldA]],
+            ["E", [ownE, managed]],
+        ],
+    )
+    assert.equal(check.duplicates.packages[1].copies[1].managed, true)
+    assert.equal(check.duplicates.packages[0].copies[0].file, path.join("New", "a.bee_pack"))
+    // ITEM_X is in A and B (item IDs ignore case); A's copies count once
+    assert.deepEqual(
+        check.duplicates.items.map((g) => [g.items, g.packages.map((p) => p.id)]),
+        [[["ITEM_X"], ["A", "B"]]],
+    )
+    assert.deepEqual(check.onBeepm, [
+        { id: "C", name: "Test package", file: "c.bee_pack", package: "@c/c" },
+    ])
+    assert.deepEqual((await checkBee2Packages(ctx, { keepOwn: ["C"] })).onBeepm, [])
+
+    // "Delete duplicates" keeps the newest; choices keep others
+    assert.deepEqual(duplicateRemovals(check.duplicates).sort(), [oldA, b, managed].sort())
+    assert.deepEqual(
+        duplicateRemovals(check.duplicates, { packages: { E: managed }, items: { 0: "B" } }).sort(),
+        [newA, oldA, ownE].sort(),
+    )
+
+    // Removing BeePM's copy uninstalls it; the rest go to BeePM's backups
+    const removed = await removePackageFiles(ctx, [
+        managed,
+        oldA,
+        path.join(tmp.dir, "elsewhere.bee_pack"),
+    ])
+    assert.deepEqual(removed, { removed: [managed, oldA], uninstalled: ["@e/e"] })
+    assert.deepEqual((await loadInstalled(ctx.paths)).packages, {})
+    await access(path.join(ctx.paths.replaced, "a_old.bee_pack"))
+    assert.equal(hasDuplicates((await checkBee2Packages(ctx)).duplicates), true) // B and A still clash
+})
+
+test("leaving the hook: BEE2's setting goes back, and its packages move into BEE2's folder", async () => {
+    const env = {
+        BEEPM_HOME: path.join(tmp.dir, "hooked", "home"),
+        BEE2_CONFIG_DIR: path.join(tmp.dir, "hooked", "bee2-config"),
+    }
+    const paths = beepmPaths(env)
+    const bee2 = await fakeBee2(path.join(tmp.dir, "hooked", "BEE2"))
+    await fakePack(path.join(bee2, "packages", "clean_style.bee_pack"), "BEE2_CLEAN_STYLE")
+    await fakePack(path.join(bee2, "packages", "mine.bee_pack"), "MINE")
+    await mkdir(bee2Paths(env).configDir, { recursive: true })
+    await writeFile(bee2Paths(env).configFile, `[Directories]\npackage = ${paths.hookedPackages}\n`)
+    // What BEE2 loaded while hooked: an installed package, BEE2's own ones BeePM downloaded, and
+    // imported copies
+    const old = paths.hookedPackages
+    await fakePack(path.join(old, "areng@items.bee_pack"), "ITEMS")
+    await fakePack(path.join(old, "clean_style.bee_pack"), "BEE2_CLEAN_STYLE")
+    await fakePack(path.join(old, "music.bee_pack"), "BEE2_MUSIC")
+    await fakePack(path.join(old, "mine.local.bee_pack"), "MINE")
+    await fakePack(path.join(old, "other.local.bee_pack"), "OTHER")
+    // ...one imported from BEE2's own folder, still the same there
+    const same = await fakePack(path.join(bee2, "packages", "same.bee_pack"), "SAME")
+    await copyFile(same, path.join(old, "same.local.bee_pack"))
+    await saveConfig(paths, {
+        hook: { originalPackageDir: "packages/", hookedAt: "2026-10-07T19:37:14.426Z" },
+        bee2: { version: "2.4.46.1", baseFiles: ["clean_style.bee_pack", "music.bee_pack"] },
+    })
+    await saveInstalled(paths, {
+        packages: {
+            "@areng/items": { version: "1.0.0", file: "areng@items.bee_pack", beeId: "ITEMS" },
+        },
+        local: {
+            MINE: { file: "mine.local.bee_pack" },
+            OTHER: { file: "other.local.bee_pack" },
+            SAME: { file: "same.local.bee_pack", from: same, sha256: await hashFile(same) },
+        },
+    })
+
+    const ctx = await createClientContext({ env })
+    // "packages/" is in BEE2's folder: BeePM needs to see BEE2 run (or be told where it is)
+    assert.deepEqual(await leaveHook(ctx), { done: false, waitingFor: "folder" })
+    const program = path.join(bee2, "BEE2.exe")
+    assert.deepEqual(await leaveHook(ctx, { program, running: true }), {
+        done: false,
+        waitingFor: "bee2", // it would write the hooked setting back when it closes
+    })
+    assert.equal(ctx.paths.bee2Dir, bee2)
+    assert.deepEqual(await leaveHook(ctx), { done: true, moved: 1, restored: "packages/" })
+
+    assert.equal(
+        await readFile(bee2Paths(env).configFile, "utf8"),
+        "[Directories]\npackage = packages/\n",
+    )
+    await access(path.join(bee2, "packages", "beepm", "areng@items.bee_pack"))
+    await access(path.join(bee2, "packages", "music.bee_pack")) // BEE2 didn't have it
+    await access(path.join(bee2, "packages", "other.local.bee_pack"))
+    await access(path.join(paths.replaced, "mine.local.bee_pack")) // BEE2 had MINE
+    await assert.rejects(access(path.join(paths.replaced, "same.local.bee_pack"))) // the very same
+    await assert.rejects(access(old)) // emptied and gone
+    assert.deepEqual(JSON.parse(await readFile(paths.config, "utf8")), {
+        bee2: { dir: bee2, version: "2.4.46.1" },
+    })
+    assert.deepEqual((await loadInstalled(paths)).local, {})
+    assert.equal(await leaveHook(ctx), null) // nothing left to do
 })

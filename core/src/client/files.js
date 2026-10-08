@@ -1,5 +1,36 @@
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
+import { access, cp, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
+
+export const exists = (file) =>
+    access(file).then(
+        () => true,
+        () => false,
+    )
+
+/**
+ * Moves a file or folder, also to another drive (BEE2 and BeePM's own folder can be on
+ * different drives).
+ */
+export async function moveFile(source, destination) {
+    await mkdir(path.dirname(destination), { recursive: true })
+    try {
+        await rename(source, destination)
+    } catch (err) {
+        if (err.code !== "EXDEV") throw err
+        await cp(source, destination, { recursive: true, errorOnExist: true, force: false })
+        await rm(source, { recursive: true, force: true })
+    }
+}
+
+/** `file` in `folder`, or "name (2).ext", "name (3).ext"... if that's taken. */
+export async function freePath(folder, file) {
+    const ext = path.extname(file)
+    const base = file.slice(0, file.length - ext.length)
+    for (let n = 1; ; n++) {
+        const candidate = path.join(folder, n === 1 ? file : `${base} (${n})${ext}`)
+        if (!(await exists(candidate))) return candidate
+    }
+}
 
 /** Reads a JSON file, or returns `fallback` if it's missing or unreadable. */
 export async function readJson(filePath, fallback = null) {

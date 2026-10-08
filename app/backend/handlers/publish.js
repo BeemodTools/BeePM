@@ -322,7 +322,7 @@ export function publishHandlers(shared) {
             const { target, isFolder } = await resolveInput(input)
             const config = await loadConfig(ctx.paths)
             const { manifest, existing, published } = await suggestManifest(
-                { api: ctx.api, basePackages: config.bee2?.basePackages ?? [] },
+                { api: ctx.api },
                 target,
                 { handle: shared.handle, bee2Version: config.bee2?.version ?? null },
             )

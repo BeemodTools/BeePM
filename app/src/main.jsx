@@ -9,9 +9,10 @@ import UpdateToast from "./components/UpdateToast.jsx"
 import { theme } from "./theme.js"
 import "./index.css"
 
-// The same page also draws the windows that ask about updates (backend/main.js showToast)
+// The same page also draws the corner windows that ask things (backend/main.js ask)
 const params = new URLSearchParams(window.location.search)
-const toast = ["update", "close"].includes(params.get("toast")) ? params.get("toast") : null
+const TOASTS = ["update", "close", "duplicates", "adopt", "use-bee2"]
+const toast = TOASTS.includes(params.get("toast")) ? params.get("toast") : null
 
 function render() {
     createRoot(document.getElementById("root")).render(
@@ -24,6 +25,9 @@ function render() {
                         name={params.get("name")}
                         from={params.get("from")}
                         to={params.get("to")}
+                        count={Number(params.get("count")) || 1}
+                        folder={params.get("folder")}
+                        switching={Boolean(params.get("switching"))}
                     />
                 ) : (
                     <App />

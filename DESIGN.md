@@ -234,45 +234,64 @@ banReason, handle}`, `GET /v1/admin/audit`, `POST /v1/admin/import-legacy`.
 
 ## Client behavior (core/src/client)
 
-- Files live in `%APPDATA%/beepm/`. Packages are in `packages/` (the folder BEE2 is
-  hooked to), and `config/` holds `config.json`, `installed.json` and `credentials.json`
-  (the desktop app keeps its token in `credentials-app.json`, encrypted with `safeStorage`).
-  The desktop app's logs are in `logs/` (the 10 most recent are kept).
-- **Setup (init):**
-  - Pick a BEE2 release. The client downloads the matching BEE2-items release
-    (BEE2 `2.4.<minor>[.x]` maps to the highest items `v4.<minor>.*`) and extracts its
-    zips into `packages/`, recording the base package IDs.
-  - It then hooks BEE2: sets `[Directories] package` in `%APPDATA%/BEEMOD2/config/config.cfg`
-    with a line edit that keeps the rest of the file, and saves the old value in
-    `config.json`. Unhook restores just that value.
+- BeePM installs into BEE2's own packages folder, in a folder of its own:
+  `<BEE2>/packages/beepm/<scope>@<name>.bee_pack`. BEE2 looks into folders inside its
+  packages folder that aren't packages themselves, so it loads them with everything else, and
+  BEE2's settings are never touched. BeePM's other files live in `%APPDATA%/beepm/`:
+  `config/` holds `config.json`, `installed.json` and `credentials.json` (the desktop app keeps
+  its token in `credentials-app.json`, encrypted with `safeStorage`), `replaced/` keeps the
+  user's own copies of packages BeePM replaced, and the desktop app's logs are in `logs/` (the
+  10 most recent are kept).
+- **BEE2's folder:** the user picks the folder BEE2.exe is in (its packages folder, or one in
+  it, will do too; the desktop app suggests the running BEE2's folder). It's kept as
+  `bee2.dir` in `config.json`. BEE2's version comes from its log: `logs/bee2.log` starts with
+  `Running "bee2", version 2.4.46.1`, and it's read again whenever BEE2's status is asked for,
+  since it changes when BEE2 is updated. Until BEE2 has run once the version is unknown, and
+  compatibility isn't checked. Nothing installs before BeePM knows where BEE2 is (code
+  `bee2_not_set`). Choosing another BEE2 brings BeePM's packages along to its `packages/beepm`.
+  BEE2 processes are told apart by their program's folder, so only BeePM's BEE2 is ever closed
+  or waited for; another BEE2 can stay open.
 - **Install:**
   1. Resolve the spec (`@scope/name[@range]`, a bare name via `/v1/lookup`, or the old
      `author@name`) and its dependencies.
   2. Check that ranges overlap: BEE2 can load only one version of each package.
-  3. Check `compatibleWith` against the configured BEE2 version.
-  4. `@beemod/*` dependencies only need the BEE2 ID among the base packages.
-  5. Download to a temp file, verify the SHA-256, then move it to
-     `packages/<scope>@<name>.bee_pack`.
-  6. Record `{version, sha256, beeId, explicit, installedAt, file}` in `installed.json`.
+  3. Check `compatibleWith` against BEE2's version.
+  4. `@beemod/*` dependencies only need a package with that BEE2 ID in BEE2's packages folder.
+  5. A package the user added to BEE2 themselves with the same BEE2 ID (BEE2 refuses to load
+     two) is listed in the plan, and moved to `replaced/` once BeePM's is in place.
+  6. Download to a temp file, verify the SHA-256, then move it to `packages/beepm/`.
+  7. Record `{version, sha256, beeId, explicit, installedAt, file}` in `installed.json`.
 - **Uninstall** removes the file and any dependencies that nothing else needs.
   **Update** reinstalls to the highest version allowed by the original range.
+- **Scanning BEE2's packages folder** (`scan.js`) finds packages the way BEE2 does:
+  .bee_pack/.zip files and folders with an info.txt, also in folders inside it (4 deep). It
+  reads each package's ID and the IDs of the items it defines (both uppercased: BEE2 ignores
+  case, and accepts IDs BeePM wouldn't publish), 4 at a time, and caches them by path, size
+  and modified time in `cache/packages.json`, so looking again only reads what changed.
+- **The BEE2 check** (`check.js`, `duplicates.js`): what BEE2 refuses to load together, the
+  same package ID twice or an item ID in two packages, and the user's own packages (outside
+  `packages/beepm`) that are on BeePM (`/v1/lookup?beeId=`, 6 at a time), whose BeePM version
+  gets updates. Fixing duplicates keeps the newest copy of each (by the file's time) unless the
+  user picks another; for an item in two packages it's a whole package that goes.
+- Earlier 1.0 builds instead pointed BEE2's `[Directories] package` at `%APPDATA%/beepm/packages`
+  ("hooking") and downloaded BEE2's own packages there. `leaveHook` undoes that once BeePM knows
+  where BEE2 is and BEE2 is closed (it writes its config back when it exits): the old setting
+  is put back, BeePM's packages move into `packages/beepm/`, and the rest that was in the old
+  folder goes into BEE2's packages folder if BEE2 doesn't have that package yet (copies of what
+  it has go to `replaced/`, BEE2's own downloaded ones are deleted), so BEE2 loads the same
+  packages as before. The CLI and the desktop app do it as soon as they can; the app finds
+  BEE2's folder from the running BEE2.exe if it isn't chosen yet.
 - Installs from the prototype (`installed_packages.json`, files `<author>_<ID>.bee_pack`) are
-  adopted on first run by matching BEE2 IDs through `/v1/lookup?beeId=`.
-- **Local packages** (core `local.js`, the desktop app's Import tab): a .bee_pack, a package
-  folder or a folder of those from this PC, also in folders inside it (up to 4 deep, as
-  BEE2 looks into folders that aren't packages). BeePM's packages come first: one whose BEE2
-  ID is on BeePM (`/v1/lookup?beeId=`, 6 at a time) is installed from there instead. BEE2's
-  own packages and ones installed from BeePM already are skipped. The rest are copied into
-  `packages/` as `<id>.local.bee_pack` (a folder is zipped with all its files) and listed
-  under `local` in `installed.json`; Installed shows them tagged Local. They never update,
-  and installing a BeePM package with the same BEE2 ID replaces the local copy. Hooking
-  stops BEE2 loading its own packages folder, so while it's hooked, Import offers that folder
-  (`config.hook.originalPackageDir`; a relative one is resolved against BEE2.exe's folder,
-  which the app remembers whenever it sees BEE2 running).
+  adopted by matching BEE2 IDs through `/v1/lookup?beeId=` once BeePM knows where BEE2 is.
 - **In the background** (the desktop app; on by default once installed): BeePM starts with
-  Windows (`--background`: only the tray), stays in the tray when its window closes, and
-  when BEE2 opens it asks about each update: Update, Not now, or Don't ask again (kept in
-  `config/app-settings.json`). BEE2 has the package files open, so updating asks first:
-  Close BEE2 (closed like its close button does, so it saves; opened again after
-  installing) or When I close it (installed once the user closes BEE2). It's never
-  force-closed for an update, and if it doesn't close, the update waits for it.
+  Windows (`--background`: only the tray), stays in the tray when its window closes, and when
+  BEE2 opens it runs the BEE2 check and looks for updates, asking in a small window in the
+  corner: Delete duplicates (keeps the newest; to the Recycle Bin) or Choose (BeePM's window,
+  per duplicate); Use BeePM's version or Keep mine (not asked again; kept in
+  `config/app-settings.json`), with Choose when there are several; and for each update,
+  Update, Not now, or Don't ask again. BEE2 has the package files open, so the changes ask
+  first: Close BEE2 (closed like its close button does, so it saves; opened again after) or
+  When I close it (done once the user closes BEE2). It's never force-closed, and if it doesn't
+  close, the changes wait for it. A BEE2 launched from another folder (or before BeePM knows
+  one) is asked about first: Use this BEE2 switches BeePM to it; Not now or Don't ask again
+  (kept in `config/app-settings.json`) leave it alone: it isn't checked, and never closed.

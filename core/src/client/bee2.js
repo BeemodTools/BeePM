@@ -1,63 +1,64 @@
 import { execFile } from "node:child_process"
-import { createWriteStream } from "node:fs"
-import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises"
+import { open, readdir, readFile, rm, rmdir, stat, writeFile } from "node:fs/promises"
 import path from "node:path"
-import { pipeline } from "node:stream/promises"
-import yauzl from "yauzl"
-import { readInfoTxt } from "../infotxt.js"
-import { readPack } from "../pack.js"
-import { downloadFile } from "./download.js"
-import { getGithubJson } from "./github.js"
+import { hashFile } from "../pack.js"
+import { exists, freePath, moveFile } from "./files.js"
+import { bee2PackagesDir, beepmPackagesDir, useBee2Folder } from "./paths.js"
+import { scanPackages } from "./scan.js"
+import { loadConfig, loadInstalled, saveConfig, saveInstalled } from "./state.js"
 
 /** A problem with the user's BEE2 setup, with a message meant for them. */
 export class Bee2Error extends Error {}
 
-/**
- * Force-closes BEE2 (BEE2.exe and its child processes) if it's running. BEE2 saves its
- * settings when it exits normally, which would undo a hook; a forced close doesn't save,
- * and it also lets go of the package files. Resolves to true if BEE2 was running.
- * BEEPM_NO_CLOSE_BEE2=1 turns this off (tests).
- */
-export function closeBee2() {
-    if (process.env.BEEPM_NO_CLOSE_BEE2) return Promise.resolve(false)
-    const [command, args] =
-        process.platform === "win32"
-            ? ["taskkill", ["/F", "/T", "/IM", "BEE2.exe"]]
-            : ["pkill", ["-x", "BEE2"]]
-    return new Promise((resolve) => {
-        execFile(command, args, { windowsHide: true }, (err) => {
-            if (err) return resolve(false) // Not running
-            // Give Windows a moment to release BEE2's file handles
-            setTimeout(() => resolve(true), 500)
-        })
-    })
+const normalize = (p) => {
+    const resolved = path.resolve(String(p).trim())
+    return process.platform === "win32" ? resolved.toLowerCase() : resolved
 }
+const samePath = (a, b) => Boolean(a) && Boolean(b) && normalize(a) === normalize(b)
+const isInside = (file, folder) => normalize(file).startsWith(normalize(folder) + path.sep)
 
-/**
- * Asks BEE2 to close the way its close button does (its main window only), so it exits
- * normally and saves (unlike closeBee2). Resolves to whether BEE2 was asked: not when it isn't
- * running, or a dialog is open in it. Windows only: elsewhere the user closes BEE2.
- * BEEPM_NO_CLOSE_BEE2=1 turns this off (tests).
- */
-export function askBee2ToClose() {
-    if (process.env.BEEPM_NO_CLOSE_BEE2 || process.platform !== "win32") {
-        return Promise.resolve(false)
-    }
-    // CloseMainWindow() is false if there's no window to close, or it's disabled by a dialog
-    const script =
-        "@(Get-Process -Name BEE2 -ErrorAction SilentlyContinue | Where-Object { $_.CloseMainWindow() }).Count"
+/** Runs a PowerShell script (with extra environment variables); null if it failed. */
+function powershell(script, env = {}) {
     return new Promise((resolve) => {
         execFile(
             "powershell",
             ["-NoProfile", "-NonInteractive", "-Command", script],
-            { windowsHide: true },
-            (err, stdout) => resolve(!err && Number(String(stdout ?? "").trim()) > 0),
+            { windowsHide: true, env: { ...process.env, ...env } },
+            (err, stdout) => resolve(err ? null : String(stdout ?? "")),
         )
     })
 }
 
-/** Whether BEE2 is running (BEE2.exe on Windows, a BEE2 process elsewhere). */
-export function isBee2Running() {
+// The BEE2 processes from one folder ($env:BEEPM_BEE2_DIR; all of them when it's empty). One
+// whose program can't be seen (BEE2 run as administrator) might be that BEE2, so it counts.
+const BEE2_PROCESSES =
+    "Get-Process -Name BEE2 -ErrorAction SilentlyContinue | Where-Object { -not $env:BEEPM_BEE2_DIR -or -not $_.Path -or $_.Path.StartsWith($env:BEEPM_BEE2_DIR.TrimEnd('\\') + '\\', [StringComparison]::OrdinalIgnoreCase) }"
+
+/**
+ * Asks BEE2 (the one in `folder`, else any) to close the way its close button does, so it exits
+ * normally and saves. Resolves to whether BEE2 was asked: not when it isn't running, or a dialog
+ * is open in it. Windows only: elsewhere the user closes BEE2.
+ * BEEPM_NO_CLOSE_BEE2=1 turns this off (tests).
+ */
+export async function askBee2ToClose(folder = null) {
+    if (process.env.BEEPM_NO_CLOSE_BEE2 || process.platform !== "win32") return false
+    // CloseMainWindow() is false if there's no window to close, or it's disabled by a dialog
+    const count = await powershell(
+        `@(${BEE2_PROCESSES} | Where-Object { $_.CloseMainWindow() }).Count`,
+        { BEEPM_BEE2_DIR: folder ?? "" },
+    )
+    return Number(count?.trim()) > 0
+}
+
+/**
+ * Whether BEE2 is running: the one in `folder` (its program is in there), or any BEE2 without
+ * one (BEE2.exe on Windows, a BEE2 process elsewhere, where the folder can't be told).
+ */
+export async function isBee2Running(folder = null) {
+    if (folder && process.platform === "win32") {
+        const count = await powershell(`@(${BEE2_PROCESSES}).Count`, { BEEPM_BEE2_DIR: folder })
+        if (count !== null) return Number(count.trim()) > 0
+    }
     const [command, args] =
         process.platform === "win32"
             ? ["tasklist", ["/FI", "IMAGENAME eq BEE2.exe", "/FO", "CSV", "/NH"]]
@@ -70,22 +71,118 @@ export function isBee2Running() {
     })
 }
 
-/** The program file of the running BEE2 (to open it again after updating), or null. */
-export function findBee2Program() {
-    if (process.platform !== "win32") return Promise.resolve(null)
-    const script =
-        "(Get-Process -Name BEE2 -ErrorAction SilentlyContinue | Select-Object -First 1).Path"
-    return new Promise((resolve) => {
-        execFile(
-            "powershell",
-            ["-NoProfile", "-NonInteractive", "-Command", script],
-            { windowsHide: true },
-            (err, stdout) => {
-                const file = String(stdout ?? "").trim()
-                resolve(!err && file ? file : null)
-            },
-        )
-    })
+/** The program files of the running BEE2s, one per BEE2 (Windows only). */
+export async function findBee2Programs() {
+    if (process.platform !== "win32") return []
+    const out = await powershell(
+        "Get-Process -Name BEE2 -ErrorAction SilentlyContinue | ForEach-Object { $_.Path }",
+    )
+    const programs = String(out ?? "")
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+    return [...new Map(programs.map((p) => [normalize(p), p])).values()]
+}
+
+/** The program file of the running BEE2 (the one in `folder`, else any), or null. */
+export async function findBee2Program(folder = null) {
+    return (await findBee2Programs()).find((p) => !folder || isInside(p, folder)) ?? null
+}
+
+// ---------- BEE2's folder ----------
+
+async function isBee2Folder(dir) {
+    for (const program of ["BEE2.exe", "BEE2"]) {
+        if ((await stat(path.join(dir, program)).catch(() => null))?.isFile()) return true
+    }
+    return false
+}
+
+/**
+ * BEE2's folder (the one with BEE2.exe) from what the user picked: that folder, or one inside
+ * it like its packages folder. Throws Bee2Error if BEE2 isn't there.
+ */
+export async function findBee2Folder(picked) {
+    const start = path.resolve(String(picked ?? "").trim() || ".")
+    let dir = start
+    for (let up = 0; up <= 2; up++) {
+        if (await isBee2Folder(dir)) return dir
+        const parent = path.dirname(dir)
+        if (parent === dir) break
+        dir = parent
+    }
+    throw new Bee2Error(`BEE2 isn't in ${start}. Choose the folder BEE2.exe is in.`)
+}
+
+// BEE2's log starts with: Running "bee2", version 2.4.46.1 64-bit
+const VERSION_RE = /Running "?bee2"?,? version (\d+(?:\.\d+)+)/i
+
+/** BEE2's version from its log (logs/bee2.log), or null if BEE2 hasn't run yet. */
+export async function readBee2Version(dir) {
+    for (const name of ["bee2.log", "bee2.1.log", "bee2.2.log"]) {
+        let handle = null
+        try {
+            handle = await open(path.join(dir, "logs", name), "r")
+            const { buffer, bytesRead } = await handle.read(Buffer.alloc(4096), 0, 4096, 0)
+            const match = VERSION_RE.exec(buffer.subarray(0, bytesRead).toString("utf8"))
+            if (match) return match[1]
+        } catch {
+            // Not there (yet)
+        } finally {
+            await handle?.close()
+        }
+    }
+    return null
+}
+
+/**
+ * Uses BEE2 from `picked` (see findBee2Folder): saved in config.json with its version (from its
+ * log), and ctx.paths points at it. BeePM's packages come along from the BEE2 it used before.
+ * Returns { dir, version, moved } (moved: how many of BeePM's packages came along).
+ */
+export async function setBee2Folder(ctx, picked) {
+    const dir = await findBee2Folder(picked)
+    const config = await loadConfig(ctx.paths)
+    const before = config.bee2?.dir ?? null
+    const switching = Boolean(before) && !samePath(before, dir)
+    // Another BEE2's version doesn't carry over (one from before the folder was known does)
+    const version =
+        (await readBee2Version(dir)) ?? (switching ? null : (config.bee2?.version ?? null))
+    config.bee2 = { ...config.bee2, dir, version }
+    await saveConfig(ctx.paths, config)
+    useBee2Folder(ctx.paths, dir)
+
+    let moved = 0
+    if (switching) {
+        const from = beepmPackagesDir(before)
+        for (const entry of Object.values((await loadInstalled(ctx.paths)).packages)) {
+            const source = path.join(from, entry.file)
+            const target = path.join(ctx.paths.packages, entry.file)
+            if ((await exists(source)) && !(await exists(target))) {
+                await moveFile(source, target)
+                moved++
+            }
+        }
+        await removeEmptyFolders(from)
+    }
+    return { dir, version, moved }
+}
+
+/**
+ * BEE2's folder and version: { dir, version, found } (found: BEE2 is still there). The version
+ * is read from BEE2's log again, since it changes when BEE2 is updated.
+ */
+export async function bee2Info(ctx) {
+    const config = await loadConfig(ctx.paths)
+    const dir = config.bee2?.dir ?? null
+    if (!dir) return { dir: null, version: config.bee2?.version ?? null, found: false }
+    const found = await isBee2Folder(dir)
+    const version = found ? await readBee2Version(dir) : null
+    if (version && version !== config.bee2.version) {
+        config.bee2.version = version
+        await saveConfig(ctx.paths, config)
+    }
+    return { dir, version: config.bee2.version ?? null, found }
 }
 
 // ---------- config.cfg editing ----------
@@ -146,12 +243,6 @@ export function removeIniKey(text, section, key) {
     return lines.join(eol)
 }
 
-const normalize = (p) => {
-    const resolved = path.resolve(String(p).trim())
-    return process.platform === "win32" ? resolved.toLowerCase() : resolved
-}
-const samePath = (a, b) => Boolean(a) && Boolean(b) && normalize(a) === normalize(b)
-
 async function readBee2Config(bee2) {
     try {
         return (await readFile(bee2.configFile, "utf8")).replace(/^﻿/, "")
@@ -161,243 +252,131 @@ async function readBee2Config(bee2) {
     }
 }
 
-/** Whether BEE2 currently loads packages from BeePM's folder. */
-export async function bee2Status(paths, bee2) {
-    const text = await readBee2Config(bee2)
-    const packageDir = text === null ? null : getIniValue(text, "Directories", "package")
-    return {
-        configFound: text !== null,
-        packageDir,
-        hooked: samePath(packageDir, paths.packages),
+/** Removes the empty folders in `dir`, and `dir` itself if that leaves it empty. */
+async function removeEmptyFolders(dir) {
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => null)
+    if (!entries) return
+    for (const entry of entries) {
+        if (entry.isDirectory()) await removeEmptyFolders(path.join(dir, entry.name))
     }
+    await rmdir(dir).catch(() => {}) // only empty ones go
 }
+
+// ---------- leaving the hook (earlier 1.0 builds) ----------
 
 /**
- * Points BEE2's package folder at BeePM's. The previous value is stored in
- * config.hook so unhook can put it back. Mutates `config`; the caller saves it.
- * BEE2 is closed first if it's running (closedBee2 in the result says so).
+ * Earlier 1.0 builds pointed BEE2's config.cfg at BeePM's own packages folder ("hooking") and
+ * kept every package BEE2 loaded there. This puts BEE2's setting back and moves the packages
+ * into BEE2's packages folder: BeePM's into its folder there, and the rest (BEE2's own packages
+ * BeePM downloaded, imported ones) into the packages folder if BEE2 doesn't have them already,
+ * so BEE2 loads the same packages as before. Copies of what BEE2 has go to BeePM's backups,
+ * except exact ones: BEE2's own packages BeePM downloaded, and imported copies whose original
+ * file is unchanged. Those are deleted.
+ * It needs BEE2's folder (found from the hook's old setting or `program`, the running BEE2.exe,
+ * if it isn't chosen yet), and BEE2 closed while it's hooked: BEE2 writes its config.cfg back
+ * when it exits. Returns null if there's nothing to do, { done: false, waitingFor: "folder" |
+ * "bee2" }, or { done: true, moved, restored } (moved: BeePM's packages; restored: the setting
+ * put back, null for BEE2's default).
  */
-export async function hookBee2(paths, bee2, config, { close = closeBee2 } = {}) {
-    let text = await readBee2Config(bee2)
-    if (text !== null && samePath(getIniValue(text, "Directories", "package"), paths.packages)) {
-        await mkdir(paths.packages, { recursive: true })
-        return { changed: false, closedBee2: false }
-    }
-    const closedBee2 = await close()
-    text = await readBee2Config(bee2)
-    if (text === null) {
-        const dir = await stat(bee2.configDir).catch(() => null)
-        if (!dir) {
-            throw new Bee2Error(
-                "BEE2's settings weren't found. Install BEE2 and open it once, then try again.",
-            )
-        }
-        text = ""
-    }
-    const current = getIniValue(text, "Directories", "package")
-    await mkdir(paths.packages, { recursive: true })
-    if (samePath(current, paths.packages)) return { changed: false, closedBee2 }
+export async function leaveHook(ctx, { program = null, running = false } = {}) {
+    const { paths } = ctx
+    const config = await loadConfig(paths)
+    const text = await readBee2Config(ctx.bee2)
+    const setting = text === null ? null : getIniValue(text, "Directories", "package")
+    const hooked = samePath(setting, paths.hookedPackages)
+    const leftover = await exists(paths.hookedPackages)
+    if (!hooked && !config.hook && !leftover) return null
 
-    if (!config.hook)
-        config.hook = { originalPackageDir: current, hookedAt: new Date().toISOString() }
-    await writeFile(bee2.configFile, setIniValue(text, "Directories", "package", paths.packages))
-    return { changed: true, previous: current, closedBee2 }
-}
-
-/**
- * Puts BEE2's package folder back to what it was before BeePM hooked it.
- * BEE2 is closed first if it's running (closedBee2 in the result says so).
- */
-export async function unhookBee2(paths, bee2, config, { close = closeBee2 } = {}) {
-    let text = await readBee2Config(bee2)
-    let current = text === null ? null : getIniValue(text, "Directories", "package")
-    if (!samePath(current, paths.packages)) {
-        delete config.hook
-        return { changed: false, closedBee2: false }
-    }
-    const closedBee2 = await close()
-    text = (await readBee2Config(bee2)) ?? ""
-    current = getIniValue(text, "Directories", "package")
-
-    let original = config.hook ? config.hook.originalPackageDir : undefined
-    if (original === undefined) {
-        // Earlier BeePM versions kept a whole copy of config.cfg instead
-        const backup = await readFile(`${bee2.configFile}.backup`, "utf8").catch(() => null)
-        const value = backup ? getIniValue(backup, "Directories", "package") : null
-        original = samePath(value, paths.packages) ? null : value
-    }
-    const next = original
-        ? setIniValue(text, "Directories", "package", original)
-        : removeIniKey(text, "Directories", "package") // BEE2 falls back to its default folder
-    await writeFile(bee2.configFile, next)
-    delete config.hook
-    return { changed: true, restored: original ?? null, closedBee2 }
-}
-
-// ---------- BEE2 versions and base packages ----------
-
-const GITHUB = "https://api.github.com/repos/BEEmod"
-
-// BEE2's releases rarely change: asked for at most every half hour (see getGithubJson)
-const githubJson = (fetch, url) =>
-    getGithubJson(fetch, url, { maxAge: 30 * 60 * 1000, ErrorType: Bee2Error })
-
-/** Recent BEE2 releases: [{ version: "2.4.46.1", name: "Version 4.46.1", publishedAt }]. */
-export async function listBee2Releases({ fetch = globalThis.fetch } = {}) {
-    const releases = await githubJson(fetch, `${GITHUB}/BEE2.4/releases?per_page=30`)
-    return releases
-        .filter((r) => !r.draft && !r.prerelease)
-        .map((r) => ({
-            version: r.tag_name.replace(/^v/i, ""),
-            name: r.name || r.tag_name,
-            publishedAt: r.published_at,
-        }))
-}
-
-/** BEE2 2.4.<minor>.x uses BEE2-items v4.<minor>.*: picks the newest of those. */
-export async function findItemsRelease({ fetch = globalThis.fetch } = {}, bee2Version) {
-    const minor = Number(String(bee2Version).replace(/^v/i, "").split(".")[2])
-    if (!Number.isInteger(minor))
-        throw new Bee2Error(`"${bee2Version}" isn't a BEE2 version like 2.4.46.1.`)
-    const releases = await githubJson(fetch, `${GITHUB}/BEE2-items/releases?per_page=100`)
-    const matching = releases
-        .filter((r) => !r.draft && !r.prerelease)
-        .map((r) => ({ release: r, match: /^v?4\.(\d+)\.(\d+)$/.exec(r.tag_name) }))
-        .filter(({ match }) => match && Number(match[1]) === minor)
-        .sort((a, b) => Number(b.match[2]) - Number(a.match[2]))
-    if (!matching.length)
-        throw new Bee2Error(`There's no BEE2-items release for BEE2 ${bee2Version}.`)
-    return matching[0].release
-}
-
-// No real BEE2-items zip comes close to these
-const MAX_ZIP_ENTRIES = 100000
-const MAX_EXTRACTED_BYTES = 8 * 1024 ** 3
-
-/**
- * Extracts a zip into a folder. Returns the top-level names it created. yauzl refuses entry
- * names that leave the folder, and checks each entry's size against what the zip says.
- */
-async function extractZip(zipPath, destination, onEntry) {
-    const zipfile = await yauzl.openPromise(zipPath, { lazyEntries: true, autoClose: false })
-    const top = new Set()
-    let entries = 0
-    let bytes = 0
-    try {
-        for await (const entry of zipfile.eachEntry()) {
-            entries++
-            bytes += entry.uncompressedSize
-            if (entries > MAX_ZIP_ENTRIES || bytes > MAX_EXTRACTED_BYTES) {
-                throw new Bee2Error(`${path.basename(zipPath)} is too large to be BEE2's packages.`)
+    if (!paths.bee2Dir) {
+        const original = config.hook?.originalPackageDir
+        const guesses = [
+            original && path.isAbsolute(original) ? original : null,
+            program ? path.dirname(program) : null,
+        ]
+        for (const guess of guesses.filter(Boolean)) {
+            const dir = await findBee2Folder(guess).catch(() => null)
+            if (dir) {
+                await setBee2Folder(ctx, dir)
+                break
             }
-            const target = path.join(destination, entry.fileName)
-            top.add(entry.fileName.split("/")[0])
-            if (entry.fileName.endsWith("/")) {
-                await mkdir(target, { recursive: true })
-                continue
+        }
+        if (!paths.bee2Dir) return { done: false, waitingFor: "folder" }
+    }
+    if (hooked && running) return { done: false, waitingFor: "bee2" }
+
+    let restored = null
+    if (hooked) {
+        let original = config.hook ? config.hook.originalPackageDir : undefined
+        if (original === undefined) {
+            // The earliest builds kept a whole copy of config.cfg instead
+            const backup = await readFile(`${ctx.bee2.configFile}.backup`, "utf8").catch(() => null)
+            const value = backup ? getIniValue(backup, "Directories", "package") : null
+            original = samePath(value, paths.hookedPackages) ? null : value
+        }
+        await writeFile(
+            ctx.bee2.configFile,
+            original
+                ? setIniValue(text, "Directories", "package", original)
+                : removeIniKey(text, "Directories", "package"), // BEE2 falls back to its default
+        )
+        restored = original ?? null
+    }
+
+    const installed = await loadInstalled(paths)
+    let moved = 0
+    if (leftover) {
+        for (const entry of Object.values(installed.packages)) {
+            const from = path.join(paths.hookedPackages, entry.file)
+            const to = path.join(paths.packages, entry.file)
+            if ((await exists(from)) && !(await exists(to))) {
+                await moveFile(from, to)
+                moved++
             }
-            await mkdir(path.dirname(target), { recursive: true })
-            await pipeline(await zipfile.openReadStreamPromise(entry), createWriteStream(target))
-            onEntry?.(entry.fileName)
         }
-    } finally {
-        zipfile.close()
-    }
-    return [...top]
-}
-
-/** The BEE2 IDs of package files in a folder: Map(id -> file name). */
-export async function scanPackageIds(folder, fileNames = null) {
-    const ids = new Map()
-    const names = fileNames ?? (await readdir(folder).catch(() => []))
-    for (const name of names) {
-        if (!/\.(bee_pack|zip)$/i.test(name)) continue
-        try {
-            const { infoText } = await readPack(path.join(folder, name))
-            if (infoText) ids.set(readInfoTxt(infoText).id, name)
-        } catch {
-            // Not a readable package: ignore it
+        const bee2Packages = bee2PackagesDir(paths.bee2Dir)
+        const inBee2 = new Set(
+            (await scanPackages(bee2Packages, { skip: [paths.packages] }))
+                .map((p) => p.id)
+                .filter(Boolean),
+        )
+        const downloaded = new Set((config.bee2?.baseFiles ?? []).map((f) => f.toLowerCase()))
+        // Imported copies, by file: one is spare if the file it came from is still the same
+        const imported = new Map(
+            Object.values(installed.local).map((entry) => [
+                String(entry.file).toLowerCase(),
+                entry,
+            ]),
+        )
+        const unchanged = async (entry) =>
+            Boolean(entry?.from && entry.sha256) &&
+            (await stat(entry.from).catch(() => null))?.isFile() === true &&
+            (await hashFile(entry.from)) === entry.sha256
+        for (const pkg of await scanPackages(paths.hookedPackages)) {
+            if (!pkg.id) continue
+            const top = path.relative(paths.hookedPackages, pkg.path).split(path.sep)[0]
+            if (!inBee2.has(pkg.id)) {
+                await moveFile(pkg.path, await freePath(bee2Packages, path.basename(pkg.path)))
+                inBee2.add(pkg.id)
+            } else if (
+                downloaded.has(top.toLowerCase()) ||
+                (await unchanged(imported.get(top.toLowerCase())))
+            ) {
+                await rm(pkg.path, { recursive: true, force: true }) // BEE2 has the very same
+            } else {
+                await moveFile(pkg.path, await freePath(paths.replaced, path.basename(pkg.path)))
+            }
         }
-    }
-    return ids
-}
-
-/**
- * Fills in config.bee2.basePackages from the base package files when it's empty (setups made
- * before BeePM could read BEE2's LZMA-compressed packages). Returns true if it changed config.
- */
-export async function refreshBaseIds(paths, config) {
-    const bee2 = config.bee2
-    if (!bee2?.baseFiles?.length || bee2.basePackages?.length) return false
-    const ids = await scanPackageIds(paths.packages, bee2.baseFiles)
-    if (!ids.size) return false
-    bee2.basePackages = [...ids.keys()].sort()
-    return true
-}
-
-/**
- * Downloads BEE2's own packages (BEE2-items) for a BEE2 version into the packages folder,
- * replacing the ones from a previous setup. Records them in config.bee2. Mutates `config`.
- * BEE2 is closed first if it's running, since it keeps its package files open.
- * onProgress gets, in order:
- *   { step: "plan", assets: [{ name, size }] }   every download, before the first one starts
- *   { step: "closed-bee2" }                      only if BEE2 had to be closed
- *   { step: "download" | "extract", asset, received, total }
- */
-export async function installBasePackages(
-    paths,
-    config,
-    {
-        version,
-        name = null,
-        includeMusic = true,
-        fetch = globalThis.fetch,
-        onProgress,
-        close = closeBee2,
-    } = {},
-) {
-    const release = await findItemsRelease({ fetch }, version)
-    const isMusic = (asset) => /music/i.test(asset.name)
-    const assets = release.assets
-        .filter((a) => a.name.toLowerCase().endsWith(".zip") && (includeMusic || !isMusic(a)))
-        // The packages first, the optional music last
-        .sort((a, b) => Number(isMusic(a)) - Number(isMusic(b)))
-    if (!assets.length)
-        throw new Bee2Error(`BEE2-items ${release.tag_name} has no package downloads.`)
-    onProgress?.({ step: "plan", assets: assets.map((a) => ({ name: a.name, size: a.size })) })
-
-    if (await close()) onProgress?.({ step: "closed-bee2" })
-    await mkdir(paths.packages, { recursive: true })
-    for (const file of config.bee2?.baseFiles ?? []) {
-        await rm(path.join(paths.packages, file), { recursive: true, force: true })
+        await removeEmptyFolders(paths.hookedPackages)
     }
 
-    const files = new Set()
-    for (const asset of assets) {
-        const zipPath = path.join(paths.cache, path.basename(asset.name))
-        await downloadFile(asset.browser_download_url, zipPath, {
-            fetch,
-            expectedSize: asset.size,
-            onProgress: (received, total) =>
-                onProgress?.({ step: "download", asset: asset.name, received, total }),
-        })
-        let done = 0
-        for (const top of await extractZip(zipPath, paths.packages, () =>
-            onProgress?.({ step: "extract", asset: asset.name, received: ++done, total: 0 }),
-        )) {
-            files.add(top)
-        }
-        await rm(zipPath, { force: true })
+    // What the hook and BEE2's downloaded packages needed is gone (setBee2Folder may have saved)
+    const latest = await loadConfig(paths)
+    delete latest.hook
+    latest.bee2 = { dir: paths.bee2Dir, version: latest.bee2?.version ?? null }
+    await saveConfig(paths, latest)
+    if (Object.keys(installed.local).length) {
+        installed.local = {}
+        await saveInstalled(paths, installed)
     }
-
-    const ids = await scanPackageIds(paths.packages, [...files])
-    config.bee2 = {
-        version: String(version).replace(/^v/i, ""),
-        name,
-        itemsTag: release.tag_name,
-        basePackages: [...ids.keys()].sort(),
-        baseFiles: [...files].sort(),
-        installedAt: new Date().toISOString(),
-    }
-    return config.bee2
+    return { done: true, moved, restored }
 }

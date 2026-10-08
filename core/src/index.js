@@ -1,5 +1,6 @@
 export * from "./names.js"
 export * from "./compat.js"
+export * from "./duplicates.js"
 export * from "./infotxt.js"
 export * from "./manifest.js"
 export * from "./pack.js"
