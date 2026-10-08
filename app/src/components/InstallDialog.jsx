@@ -16,6 +16,7 @@ import RadioButtonUncheckedIcon from "@mui/icons-material/RadioButtonUnchecked"
 import { formatBytes } from "../lib/format.js"
 import { useLastValue } from "../lib/useLastValue.js"
 import { useApp } from "../state/context.js"
+import Bee2OpenAlert from "./Bee2OpenAlert.jsx"
 import ErrorAlert from "./ErrorAlert.jsx"
 
 const CHANGE_COLORS = {
@@ -84,7 +85,7 @@ function StepRow({ step, status, progress }) {
 
 /** Install and update flow: planning, the plan to confirm, download progress, or the error. */
 export default function InstallDialog() {
-    const { job, confirmJob, closeJob } = useApp()
+    const { job, confirmJob, closeJob, bee2Open } = useApp()
     const shown = useLastValue(job)
     const phase = shown?.phase
     const steps = shown?.plan?.steps ?? []
@@ -152,13 +153,14 @@ export default function InstallDialog() {
                 )}
 
                 {phase === "error" && <ErrorAlert error={shown.error} problems={shown.problems} />}
+                {phase === "confirm" && <Bee2OpenAlert sx={{ mt: 2 }} />}
             </DialogContent>
             {(phase === "confirm" || phase === "error") && (
                 <DialogActions>
                     {phase === "confirm" ? (
                         <>
                             <Button onClick={closeJob}>Cancel</Button>
-                            <Button variant="contained" onClick={confirmJob}>
+                            <Button variant="contained" onClick={confirmJob} disabled={bee2Open}>
                                 Install
                             </Button>
                         </>

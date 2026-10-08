@@ -6,7 +6,12 @@ import assert from "node:assert/strict"
 import { mkdir, utimes, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { after, before, test } from "node:test"
-import { bee2LogProblems, bee2RunEnd, readBee2Problems } from "../src/client/bee2log.js"
+import {
+    bee2ErrorPackage,
+    bee2LogProblems,
+    bee2RunEnd,
+    readBee2Problems,
+} from "../src/client/bee2log.js"
 import { tempDir } from "./helpers.js"
 
 let tmp
@@ -134,4 +139,58 @@ test("each run has its own log: the one written to while it ran, and when it end
     assert.equal(await bee2RunEnd(dir, start + 120_000), null) // still running
     assert.equal(await bee2RunEnd(dir, start + 200_000), null) // no log of its own yet
     assert.equal(await bee2RunEnd(path.join(tmp.dir, "nowhere"), start), null)
+})
+
+// Any other crash: here an item that refers to a style wrongly, among BEE2's warnings (AppError),
+// shaped like a real BEE2 4.46 log
+const ITEM_CRASH = String.raw`[DEBUG] packages.post_parse(): Inheritance path for <Style: BEE2_PORTAL_1> = [<Style: BEE2_PORTAL_1>]
+[ERROR] core.done_callback(): Trio exited with exception
+  + Exception Group Traceback (most recent call last):
+  | ExceptionGroup: Exceptions from Trio nursery (1 sub-exception)
+  +-+---------------- 1 ----------------
+      | ExceptionGroup: ErrorUI block raised (3 sub-exceptions)
+      +-+---------------- 1 ----------------
+        | transtoken.AppError: AppError: TemplateBrush "temp_vac_start" in package "ENDEREK-S_PACKAGES" no longer needs to be defined in info.txt. Use a bee2_template_conf entity instead.
+        +---------------- 2 ----------------
+        | transtoken.AppError: AppError: "DECOSTA:items/advanced_panel/properties.txt" has incomplete grouping icon definition!
+        +---------------- 3 ----------------
+        | Exception Group Traceback (most recent call last):
+        |   File "packages\item.py", line 759, in post_parse
+        | ExceptionGroup: Exceptions from Trio nursery (1 sub-exception)
+        +-+---------------- 1 ----------------
+          | Traceback (most recent call last):
+          |   File "packages\item.py", line 1236, in assign_styled_items
+          | ValueError: Item ITEM_LAUTARO_HALF_GRATE's AXO_HYBRID style referenced invalid style "BEE2_PORTAL_1"
+          +------------------------------------
+`
+
+test("any crash counts: its error, found by the package or item it names; warnings don't", () => {
+    const message =
+        'Item ITEM_LAUTARO_HALF_GRATE\'s AXO_HYBRID style referenced invalid style "BEE2_PORTAL_1"'
+    assert.deepEqual(bee2LogProblems(ITEM_CRASH), [{ message }])
+
+    // The packages in BEE2's folder: a package's ID, or an item's (its package)
+    const packages = { BEE2_BARRIER_VARIANTS: ["ITEM_LAUTARO_HALF_GRATE"], BEE2_PORTAL_1: [] }
+    const findPackage = (id) =>
+        id in packages
+            ? id
+            : (Object.keys(packages).find((pkg) => packages[pkg].includes(id)) ?? null)
+    // The item it's about, not the style it mentions
+    assert.equal(bee2ErrorPackage(message, findPackage), "BEE2_BARRIER_VARIANTS")
+    assert.equal(bee2ErrorPackage('Package "DECOSTA" is broken', findPackage), null)
+    assert.equal(bee2ErrorPackage("Something went wrong", findPackage), null)
+
+    // A crash that names nothing still counts; the window's errors without a package too
+    assert.deepEqual(
+        bee2LogProblems(
+            "[ERROR] core.done_callback(): Trio exited with exception\n  | KeyError: 'palette'\n",
+        ),
+        [{ message: "KeyError: 'palette'" }],
+    )
+    assert.deepEqual(
+        bee2LogProblems(
+            " | desc=An error occurred when loading packages:\n | The palette can't be read.\n |___\n",
+        ),
+        [{ message: "The palette can't be read." }],
+    )
 })

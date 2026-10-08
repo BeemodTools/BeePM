@@ -36,6 +36,7 @@ import {
 } from "../lib/format.js"
 import { useLastValue } from "../lib/useLastValue.js"
 import { useApp } from "../state/context.js"
+import Bee2OpenAlert from "./Bee2OpenAlert.jsx"
 import { ContentsLink } from "./Contents.jsx"
 import ErrorAlert from "./ErrorAlert.jsx"
 
@@ -317,7 +318,8 @@ function DetailsBody({ name, onClose }) {
     useEffect(() => {
         if (canManage) loadWatch()
     }, [canManage, loadWatch, registryVersion])
-    const working = Boolean(job) || Boolean(busy[name])
+    // Installing and removing: not while BEE2 has the files open (Bee2OpenAlert says so)
+    const working = Boolean(job) || Boolean(busy[name]) || app.bee2Open
 
     /** Runs an owner or admin action; the confirm dialog shows a failure, otherwise reload. */
     const act = async (request, success) => {
@@ -527,6 +529,7 @@ function DetailsBody({ name, onClose }) {
             </DialogTitle>
 
             <DialogContent dividers sx={{ minHeight: 240 }}>
+                {doc && !removed && <Bee2OpenAlert sx={{ mb: 2 }} />}
                 {state.loading && (
                     <Box sx={{ display: "flex", justifyContent: "center", py: 6 }}>
                         <CircularProgress />

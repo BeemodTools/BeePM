@@ -86,6 +86,7 @@ async function startBackend({
     showReview,
     showContents,
     openProgram,
+    openPath,
 } = {}) {
     const opened = []
     const events = []
@@ -99,6 +100,7 @@ async function startBackend({
         showReview,
         showContents,
         openProgram,
+        openPath,
         appVersion: "1.0.0-test",
         openExternal: async (url) => opened.push(url),
         send: (channel, payload) => events.push({ channel, payload }),
@@ -668,6 +670,145 @@ test("BEE2 left running after it crashed: ended before what broke it is removed"
     await assert.rejects(access(broken))
     await backend.watcher.check() // nothing's left to ask about
     assert.equal(happened.length, 3)
+    await backend.dispose()
+})
+
+test("any crash: the package with the item BEE2 stopped on is offered; none named, its log", async () => {
+    const folder = await fakeBee2(path.join(dir, "item-crash-bee2", "BEE2"))
+    const packages = path.join(folder, "packages")
+    const grates = path.join(packages, "barrier_variants.bee_pack")
+    await writeFile(
+        grates,
+        await zipBytes({
+            "info.txt":
+                '"ID" "BEE2_BARRIER_VARIANTS"\n"Name" "Glass/Grating Variants"\n"Item"\n{\n"ID" "ITEM_LAUTARO_HALF_GRATE"\n}\n',
+        }),
+    )
+    // The style the error mentions is fine: its package stays
+    const style = path.join(packages, "p1_style.bee_pack")
+    await writeFile(
+        style,
+        await zipBytes({ "info.txt": '"ID" "BEE2_PORTAL_1"\n"Name" "Portal 1"\n' }),
+    )
+    const bee2 = { running: false }
+    const asked = []
+    const opened = []
+    const logged = []
+    const { backend } = await startBackend({
+        home: path.join(dir, "item-crash-home"),
+        log: {
+            section: (_title, fn) => fn(),
+            info: (text) => logged.push(text),
+            warn: (text) => logged.push(text),
+            error: () => {},
+            debug() {},
+            getLogsDirectory: () => null,
+        },
+        bee2Process: {
+            isRunning: async () => bee2.running,
+            findProgram: async () => (bee2.running ? path.join(folder, "BEE2.exe") : null),
+            programs: async () => [],
+            leftovers: async () => [],
+        },
+        ask: async (question) => {
+            asked.push(question)
+            return { broken: "remove", crashed: "log" }[question.kind] ?? "later"
+        },
+        openPath: async (file) => opened.push(file),
+    })
+    assert.equal((await backend.invoke("bee2:set-folder", folder)).ok, true)
+    const crash = (error) =>
+        writeFile(
+            path.join(folder, "logs", "bee2.log"),
+            [
+                "[ERROR] core.done_callback(): Trio exited with exception",
+                '        | transtoken.AppError: AppError: TemplateBrush "temp_x" in package "BEE2_PORTAL_1" no longer needs to be defined in info.txt.',
+                "          | Traceback (most recent call last):",
+                `          | ${error}`,
+            ].join("\r\n"),
+        )
+
+    bee2.running = true
+    await backend.watcher.check()
+    await crash(
+        'ValueError: Item ITEM_LAUTARO_HALF_GRATE\'s AXO_HYBRID style referenced invalid style "BEE2_PORTAL_1"',
+    )
+    bee2.running = false
+    await backend.watcher.check()
+    assert.deepEqual(
+        asked.map((q) => [q.kind, q.name]),
+        [["broken", "Glass/Grating Variants"]],
+    )
+    await assert.rejects(access(grates)) // removed
+    await access(style) // not the style's package
+    // The log says what BEE2's log said, and which package that is
+    assert.ok(
+        logged.includes(
+            'bee2.log: Item ITEM_LAUTARO_HALF_GRATE\'s AXO_HYBRID style referenced invalid style "BEE2_PORTAL_1" -> Glass/Grating Variants (barrier_variants.bee_pack)',
+        ),
+        logged.join("\n"),
+    )
+
+    // Something that names no package: BEE2 crashed, and its log opens
+    bee2.running = true
+    await backend.watcher.check()
+    await crash("KeyError: 'palette'")
+    bee2.running = false
+    await backend.watcher.check()
+    assert.deepEqual(
+        asked.slice(1).map((q) => [q.kind, q.message]),
+        [["crashed", "KeyError: 'palette'"]],
+    )
+    assert.deepEqual(opened, [path.join(folder, "logs", "bee2.log")])
+    await backend.dispose()
+})
+
+test("while BEE2 is open nothing is installed or removed; the window opens and closes it", async () => {
+    const folder = await fakeBee2(path.join(dir, "open-bee2", "BEE2"))
+    // busy: a window of its own is open in BEE2, so it can't be asked to close
+    const bee2 = { running: false, busy: false, asked: 0 }
+    const opened = []
+    const { backend } = await startBackend({
+        home: path.join(dir, "open-home"),
+        bee2Process: {
+            isRunning: async () => bee2.running,
+            findProgram: async () => null,
+            programs: async () => [],
+            leftovers: async () => [],
+            askToClose: async () => {
+                if (bee2.busy) return false
+                bee2.asked++
+                bee2.running = false // it closes when asked
+                return true
+            },
+        },
+        openProgram: (file) => {
+            opened.push(file)
+            bee2.running = true
+        },
+    })
+    assert.equal((await backend.invoke("bee2:set-folder", folder)).ok, true)
+    assert.deepEqual(await backend.invoke("bee2:running"), { ok: true, running: false })
+
+    // Opened from the window
+    assert.deepEqual(await backend.invoke("bee2:open"), { ok: true, opened: true })
+    assert.deepEqual(opened, [path.join(folder, "BEE2.exe")])
+    assert.deepEqual(await backend.invoke("bee2:running"), { ok: true, running: true })
+    assert.deepEqual(await backend.invoke("bee2:open"), { ok: true, opened: false }) // open already
+
+    // It has the package files open: removing (or installing) is refused, not an EBUSY
+    const removing = await backend.invoke("packages:uninstall", ["@someone/thing"])
+    assert.equal(removing.code, "bee2_running")
+    assert.match(removing.error, /Close it to install or remove packages/)
+
+    // Closed from the window: asked the way its close button does, never forced
+    bee2.busy = true
+    assert.equal((await backend.invoke("bee2:close")).code, "bee2_busy")
+    assert.equal(bee2.running, true)
+    bee2.busy = false
+    assert.deepEqual(await backend.invoke("bee2:close"), { ok: true, closed: true })
+    assert.equal(bee2.asked, 1)
+    assert.deepEqual(await backend.invoke("bee2:running"), { ok: true, running: false })
     await backend.dispose()
 })
 

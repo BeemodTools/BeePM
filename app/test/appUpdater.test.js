@@ -26,7 +26,7 @@ function fakeUpdater() {
 
 function setup(answer = "later") {
     const updater = fakeUpdater()
-    const seen = { asked: [], phases: [] }
+    const seen = { asked: [], phases: [], restarting: [] }
     const appUpdater = createAppUpdater({
         updater,
         log: quiet,
@@ -35,6 +35,8 @@ function setup(answer = "later") {
             return seen.answer ?? answer
         },
         onStatus: (status) => seen.phases.push(status.phase),
+        // Whether the install had started yet when BeePM was told it's about to restart
+        beforeRestart: () => seen.restarting.push(updater.installed !== null),
     })
     return { updater, appUpdater, seen }
 }
@@ -61,6 +63,7 @@ test("a new BeePM is downloaded quietly, then asked about; Restart installs it n
     updater.emit("update-downloaded", { version: "1.0.2" })
     await settle()
     assert.deepEqual(updater.installed, { silent: true, runAfter: true })
+    assert.deepEqual(seen.restarting, [false]) // told first, so it can say how to come back
     assert.deepEqual(seen.phases, ["checking", "downloading", "downloading", "ready", "ready"])
 })
 

@@ -19,6 +19,15 @@ function question({ kind, name, from, to, count, folder, switching, version, tex
                     ["Not now", "later"],
                 ],
             }
+        case "crashed":
+            return {
+                title: "BEE2 crashed",
+                text: text || "Its log says why.",
+                answers: [
+                    ["Open its log", "log"],
+                    ["Not now", "later"],
+                ],
+            }
         case "app-update":
             return {
                 title: `BeePM ${version} is ready`,

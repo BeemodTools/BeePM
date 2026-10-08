@@ -12,6 +12,7 @@ import ExpandMoreIcon from "@mui/icons-material/ExpandMore"
 import ExploreIcon from "@mui/icons-material/Explore"
 import { contentLabel } from "@beepm/core/kinds"
 import { api } from "../api.js"
+import Bee2OpenAlert from "../components/Bee2OpenAlert.jsx"
 import EmptyState from "../components/EmptyState.jsx"
 import ErrorAlert from "../components/ErrorAlert.jsx"
 import PackageCard from "../components/PackageCard.jsx"
@@ -81,6 +82,7 @@ export default function BrowseView({ query, kind = "", reloadKey, onNavigate }) 
                     Open BEE2 once so BeePM knows its version and which packages work with it.
                 </Alert>
             )}
+            <Bee2OpenAlert sx={{ mb: 1 }} />
 
             {error ? (
                 <ErrorAlert

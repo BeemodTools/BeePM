@@ -6,12 +6,13 @@
  * Kept free of Electron:
  *   updater   electron-updater's autoUpdater (or a stand-in with the same events and methods)
  *   ask(version) -> "restart" | "later"
- *   log, onStatus(status) (optional: the status changed, for the window)
+ *   log, onStatus(status) (optional: the status changed, for the window),
+ *   beforeRestart() (optional: BeePM is about to quit to install the update and start again)
  * status: { phase: "idle" | "checking" | "downloading" | "ready" | "current" | "error", version?,
  *   percent?, error? }
  */
 export function createAppUpdater(
-    { updater, ask, log, onStatus = () => {} },
+    { updater, ask, log, onStatus = () => {}, beforeRestart = () => {} },
     { firstLookMs = 15 * 1000, everyMs = 6 * 60 * 60 * 1000 } = {},
 ) {
     let status = { phase: "idle" }
@@ -57,6 +58,7 @@ export function createAppUpdater(
 
     /** Installs the downloaded update (silently, as it was installed) and starts BeePM again. */
     function restart() {
+        beforeRestart()
         updater.quitAndInstall(true, true)
     }
 

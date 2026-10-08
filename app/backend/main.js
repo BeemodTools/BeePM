@@ -14,11 +14,11 @@ import {
     Tray,
 } from "electron"
 import { spawn } from "node:child_process"
+import { existsSync, rmSync, writeFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { beepmPaths } from "@beepm/core/client"
-import electronUpdater from "electron-updater"
 import { createAppUpdater } from "./appUpdater.js"
 import { createBackend } from "./backend.js"
 import { logger } from "./logger.js"
@@ -42,9 +42,13 @@ const QUEUED_EVENTS = new Set([
 const WINDOW_LOG_LEVELS = new Set(["info", "warn", "error", "debug"])
 
 // Electron's own files (caches, local storage) go in their own folder, not in BeePM's
-// %APPDATA%/beepm (which holds the packages and config)
+// %APPDATA%/beepm (which holds the packages and config). BEEPM_USER_DATA puts them elsewhere:
+// a test copy of BeePM that runs alongside the installed one (it's one BeePM per folder).
 app.setName("BeePM")
-app.setPath("userData", path.join(app.getPath("appData"), "BeePM Desktop"))
+app.setPath(
+    "userData",
+    process.env.BEEPM_USER_DATA || path.join(app.getPath("appData"), "BeePM Desktop"),
+)
 // The installer's app ID (electron-builder.js): Windows shows notifications as from BeePM
 if (process.platform === "win32") app.setAppUserModelId("com.beepm.app")
 
@@ -94,8 +98,9 @@ function showWindow() {
  */
 function applyBackground(settings) {
     background = settings.background
-    // Only the installed app registers itself, not `electron .` from source
-    if (app.isPackaged) {
+    // Only the installed app registers itself, not `electron .` from source, nor a test copy
+    // (BEEPM_NO_LOGIN_ITEM: it would replace the installed app's entry)
+    if (app.isPackaged && !process.env.BEEPM_NO_LOGIN_ITEM) {
         app.setLoginItemSettings({ openAtLogin: background, args: ["--background"] })
     }
     if (background) {
@@ -145,6 +150,7 @@ function balloon(content, title = "BeePM") {
  *   adopt       "Use BeePM's <package>?": "use", "keep" or (several) "choose"
  *   close       "Close BEE2 to finish?": "now" ("later": once the user closes it)
  *   broken      "BEE2 couldn't load <package>" (its log says why): "remove"
+ *   crashed     "BEE2 crashed" (its log says why, but names no package): "log" opens the log
  *   use-bee2    "Use this BEE2 with BeePM?" (a BEE2 from another folder): "use" or "never"
  */
 function ask(question) {
@@ -180,6 +186,8 @@ function ask(question) {
                 ["remove"],
                 minutes(2),
             )
+        case "crashed":
+            return showToast({ toast: "crashed", text: question.message }, ["log"], minutes(2))
         case "use-bee2":
             return showToast(
                 {
@@ -199,15 +207,38 @@ function ask(question) {
  * BeePM's own updates, from its GitHub releases (installed app only; BEEPM_NO_UPDATE=1 turns
  * them off). A downloaded update asks in the corner whether to restart now.
  */
-function startAppUpdates() {
+async function startAppUpdates() {
     if (!app.isPackaged || process.env.BEEPM_NO_UPDATE) return
+    // Loaded once the window is open: starting BeePM doesn't wait for it
+    const { default: electronUpdater } = await import("electron-updater")
     appUpdater = createAppUpdater({
         updater: electronUpdater.autoUpdater,
         log: logger,
         ask: (version) => showToast({ toast: "app-update", version }, ["restart"], 30 * 60 * 1000),
         onStatus: (status) => send("app:update-status", status),
+        // Only the tray was open: BeePM comes back in the tray
+        beforeRestart: () => {
+            if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) return
+            try {
+                writeFileSync(trayAfterUpdate(), "")
+            } catch {
+                // It comes back with its window
+            }
+        },
     })
     appUpdater.start()
+}
+
+// After "Restart to update", the installer starts BeePM again with --updated; this file says it
+// was only in the tray
+const trayAfterUpdate = () => path.join(app.getPath("userData"), "start-in-tray")
+
+/** Whether BeePM is back from an update it restarted for while only in the tray (asked once). */
+function backFromUpdateInTray() {
+    const marker = trayAfterUpdate()
+    if (!existsSync(marker)) return false
+    rmSync(marker, { force: true })
+    return process.argv.includes("--updated")
 }
 
 /** The window's preferences: it only talks to BeePM through preload.cjs. */
@@ -338,12 +369,12 @@ function showToast(query, answers, timeoutMs) {
     })
 }
 
-/** Opens BEE2 again after updating (the program file it ran from). */
+/** Opens BEE2 (its program file): again after changing its packages, or from the window. */
 function openProgram(file) {
     const child = spawn(file, [], { cwd: path.dirname(file), detached: true, stdio: "ignore" })
-    child.on("error", (err) => logger.warn(`Couldn't open BEE2 again: ${err.message}`))
+    child.on("error", (err) => logger.warn(`Couldn't open BEE2: ${err.message}`))
     child.unref()
-    logger.info(`Opened ${path.basename(file)} again`)
+    logger.info(`Opened ${path.basename(file)}`)
 }
 
 /**
@@ -407,16 +438,14 @@ function createWindow() {
         height: 850,
         minWidth: 800,
         minHeight: 600,
-        show: false,
+        // Shown right away, in the page's background color, rather than once the page has
+        // drawn: BeePM is seen to start sooner
         backgroundColor: "#1d1e1f",
         webPreferences: webPreferences(),
     })
     mainWindow = win
     rendererReady = false
 
-    win.once("ready-to-show", () => win.show())
-    // Don't stay invisible if the first load fails
-    setTimeout(() => !win.isDestroyed() && !win.isVisible() && win.show(), 5000)
     win.on("closed", () => {
         if (mainWindow === win) mainWindow = null
         rendererReady = false
@@ -538,14 +567,17 @@ if (!app.requestSingleInstanceLock()) {
         })
         registerIpc()
         const settings = await backend.appSettings()
-        // Started with Windows: only the tray, until BeePM is opened
-        if (!(process.argv.includes("--background") && settings.background)) createWindow()
+        // Started with Windows (or by the installer, see build/installer.nsh), or back from an
+        // update while only in the tray: only the tray, until BeePM is opened
+        const afterUpdate = backFromUpdateInTray()
+        const inTray = process.argv.includes("--background") || afterUpdate
+        if (!(inTray && settings.background)) createWindow()
         applyBackground(settings)
 
         const launchUrl = process.argv.find((arg) => arg.startsWith(`${PROTOCOL}://`))
         if (launchUrl) handleProtocolUrl(launchUrl)
         backend.startup()
-        startAppUpdates()
+        startAppUpdates().catch((err) => logger.warn(`Couldn't look for updates: ${err.message}`))
 
         app.on("activate", () => {
             if (BrowserWindow.getAllWindows().length === 0) createWindow()

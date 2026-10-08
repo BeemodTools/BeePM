@@ -9,15 +9,21 @@ const LOGIN_ERRORS = {
 }
 
 const newId = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+// BEE2 opens and closes outside BeePM: how often that's looked at while the window shows
+const BEE2_LOOK_MS = 3000
 
 /**
- * Everything the views share: the login, BEE2's status, installed packages and updates, the
- * install flow, toasts, the confirmation dialog and the package details dialog.
+ * Everything the views share: the login, BEE2's status (and whether it's open: packages can't
+ * be installed or removed then), installed packages and updates, the install flow, toasts, the
+ * confirmation dialog and the package details dialog.
  */
 export default function AppProvider({ children }) {
     const [appInfo, setAppInfo] = useState(null)
     const [auth, setAuth] = useState({ loading: true, loggedIn: false })
     const [bee2, setBee2] = useState(null)
+    const [bee2Open, setBee2Open] = useState(false)
+    const [bee2Action, setBee2Action] = useState(null) // "opening" | "closing", while it's asked
     const [installed, setInstalled] = useState({})
     const [outdated, setOutdated] = useState({ rows: null, loading: false, error: null })
     const [toasts, setToasts] = useState([])
@@ -76,6 +82,34 @@ export default function AppProvider({ children }) {
         setBee2(res.ok ? res : { error: res.error })
         return res
     }, [])
+
+    /** Whether BeePM's BEE2 is open (null if that couldn't be told). */
+    const refreshBee2Open = useCallback(async () => {
+        const res = await api.bee2.running()
+        if (!res.ok) return null
+        setBee2Open(Boolean(res.running))
+        return Boolean(res.running)
+    }, [])
+
+    const openBee2 = useCallback(async () => {
+        setBee2Action("opening")
+        const res = await api.bee2.open()
+        if (!res.ok) notify(res.error, "error")
+        else if (res.opened) {
+            // It takes a moment to show up
+            for (let i = 0; i < 15 && !(await refreshBee2Open()); i++) await wait(1000)
+        }
+        setBee2Action(null)
+    }, [notify, refreshBee2Open])
+
+    /** Asks BEE2 to close the way its close button does (it saves first). */
+    const closeBee2 = useCallback(async () => {
+        setBee2Action("closing")
+        const res = await api.bee2.close()
+        if (!res.ok) notify(res.error, res.code === "bee2_busy" ? "warning" : "error")
+        await refreshBee2Open()
+        setBee2Action(null)
+    }, [notify, refreshBee2Open])
 
     /** Checks installed packages for updates (one registry request per package). */
     const checkUpdates = useCallback(async () => {
@@ -173,6 +207,7 @@ export default function AppProvider({ children }) {
             await refreshInstalled()
             if (!res.ok) {
                 setJobState({ phase: "error", title, error: res.error, problems: res.problems })
+                if (res.code === "bee2_running") refreshBee2Open()
                 return
             }
             setJobState(null)
@@ -196,7 +231,7 @@ export default function AppProvider({ children }) {
                 notify(res.warnings.join(" "), "warning")
             }
         },
-        [notify, refreshInstalled, setJobState],
+        [notify, refreshBee2Open, refreshInstalled, setJobState],
     )
 
     /**
@@ -274,11 +309,12 @@ export default function AppProvider({ children }) {
                 })
             } else {
                 notify(res.error, "error")
+                if (res.code === "bee2_running") refreshBee2Open()
             }
             await refreshInstalled()
             return res
         },
-        [askConfirm, notify, refreshInstalled],
+        [askConfirm, notify, refreshBee2Open, refreshInstalled],
     )
 
     // ---------- events from the main process, and the first load ----------
@@ -338,6 +374,20 @@ export default function AppProvider({ children }) {
         return () => offs.forEach((off) => off())
     }, [notify, refreshAuth, refreshBee2, refreshInstalled, setLogin])
 
+    // Whether BEE2 is open: every few seconds while the window shows, and right away when the
+    // background (backend/updateWatcher.js) sees it open or close
+    useEffect(() => {
+        refreshBee2Open()
+        const timer = setInterval(() => {
+            if (document.visibilityState === "visible") refreshBee2Open()
+        }, BEE2_LOOK_MS)
+        const off = onEvent("bee2:changed", () => refreshBee2Open())
+        return () => {
+            clearInterval(timer)
+            off()
+        }
+    }, [refreshBee2Open])
+
     // Changes made outside the app (the CLI, BEE2 rewriting its config) show when you come back
     useEffect(() => {
         const onFocus = () => {
@@ -382,6 +432,10 @@ export default function AppProvider({ children }) {
         auth,
         bee2,
         bee2Version,
+        bee2Open,
+        bee2Action,
+        openBee2,
+        closeBee2,
         installed,
         outdated,
         outdatedByName,

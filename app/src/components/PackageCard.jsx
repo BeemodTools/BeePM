@@ -8,14 +8,25 @@ import { ContentCounts, FoundChips } from "./Contents.jsx"
 
 /** One search result: click it for the package details. */
 export default function PackageCard({ pkg }) {
-    const { installed, bee2Version, busy, job, install, uninstall, updateFor, openPackage } =
-        useApp()
+    const {
+        installed,
+        bee2Version,
+        bee2Open,
+        busy,
+        job,
+        install,
+        uninstall,
+        updateFor,
+        openPackage,
+    } = useApp()
     const entry = installed[pkg.name]
     const compatible = isCompatible(pkg.compatibleWith, bee2Version)
     // Removed packages are only listed for admins, who can open them to restore them
     const removed = Boolean(pkg.removed)
     const update = removed ? null : updateFor(pkg.name, pkg)
     const working = Boolean(busy[pkg.name])
+    // Nothing is installed or removed while BEE2 has the files open (Bee2OpenAlert says so)
+    const blocked = Boolean(job) || bee2Open
     const stop = (action) => (event) => {
         event.stopPropagation()
         action()
@@ -138,7 +149,7 @@ export default function PackageCard({ pkg }) {
                                 size="small"
                                 variant="contained"
                                 startIcon={<UpgradeIcon />}
-                                disabled={Boolean(job) || working}
+                                disabled={blocked || working}
                                 onClick={stop(() => install([pkg.name], { update: true }))}
                             >
                                 Update to {update}
@@ -148,7 +159,7 @@ export default function PackageCard({ pkg }) {
                             size="small"
                             variant="outlined"
                             color="error"
-                            disabled={Boolean(job) || working}
+                            disabled={blocked || working}
                             onClick={stop(() => uninstall([pkg.name]))}
                             sx={{ minWidth: 96 }}
                         >
@@ -160,7 +171,7 @@ export default function PackageCard({ pkg }) {
                         size="small"
                         variant={compatible ? "contained" : "outlined"}
                         startIcon={<DownloadIcon />}
-                        disabled={Boolean(job) || !pkg.latest}
+                        disabled={blocked || !pkg.latest}
                         onClick={stop(() => install([pkg.name]))}
                         sx={{ minWidth: 96 }}
                     >

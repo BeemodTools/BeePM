@@ -22,6 +22,7 @@ const clone = (value) => JSON.parse(JSON.stringify(value))
 
 const BEE2_DIR = "C:\\Users\\you\\Documents\\BEE2_4.46.0_win"
 const PACKAGES_DIR = `${BEE2_DIR}\\packages\\beepm`
+const BEE2_OPEN = "BEE2 is open. Close it to install or remove packages."
 const USERS = ["areng14", "portalfan", "oldtimer", "carl", "mel"]
 
 function version(v, extra = {}) {
@@ -882,6 +883,7 @@ const bridge = {
         apply: async (planId) => {
             const plan = state.plans.get(planId)
             if (!plan) return fail("That install plan is out of date. Try again.")
+            if (state.bee2Running) return fail(BEE2_OPEN, { code: "bee2_running" })
             state.plans.delete(planId)
             for (const [index, step] of plan.steps.entries()) {
                 await simulate(step.size, 10, 120, (received) =>
@@ -928,6 +930,7 @@ const bridge = {
         },
         uninstall: async (names, options = {}) => {
             await sleep(300)
+            if (state.bee2Running) return fail(BEE2_OPEN, { code: "bee2_running" })
             for (const name of names) {
                 if (!state.installed[name])
                     return fail(`${name} isn't installed.`, { code: "install" })
@@ -998,6 +1001,23 @@ const bridge = {
     },
 
     bee2: {
+        // BEE2 opens and closes like the real one, after a moment
+        running: async () => ok({ running: state.bee2Running }),
+        open: async () => {
+            if (!state.bee2.dir) return fail("Choose where BEE2 is installed first.")
+            if (state.bee2Running) return ok({ opened: false })
+            setTimeout(() => {
+                state.bee2Running = true
+                emit("bee2:changed", {})
+            }, 1500)
+            return ok({ opened: true })
+        },
+        close: async () => {
+            await sleep(1200)
+            state.bee2Running = false
+            emit("bee2:changed", {})
+            return ok({ closed: true })
+        },
         status: async () =>
             ok({
                 dir: state.bee2.dir,

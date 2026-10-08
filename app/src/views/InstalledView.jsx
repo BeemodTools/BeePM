@@ -11,6 +11,7 @@ import {
 import InventoryIcon from "@mui/icons-material/Inventory"
 import RefreshIcon from "@mui/icons-material/Refresh"
 import UpgradeIcon from "@mui/icons-material/Upgrade"
+import Bee2OpenAlert from "../components/Bee2OpenAlert.jsx"
 import EmptyState from "../components/EmptyState.jsx"
 import { formatDate, isCompatible } from "../lib/format.js"
 import { useApp } from "../state/context.js"
@@ -27,12 +28,22 @@ const cardSx = {
 }
 
 function InstalledRow({ name, entry }) {
-    const { bee2Version, outdatedByName, busy, job, install, uninstall, updateFor, openPackage } =
-        useApp()
+    const {
+        bee2Version,
+        bee2Open,
+        outdatedByName,
+        busy,
+        job,
+        install,
+        uninstall,
+        updateFor,
+        openPackage,
+    } = useApp()
     const row = outdatedByName[name]
     const update = updateFor(name)
     const compatible = isCompatible(entry.compatibleWith, bee2Version)
-    const working = Boolean(job) || Boolean(busy[name])
+    // BEE2 has the files open while it runs (Bee2OpenAlert says so)
+    const working = Boolean(job) || Boolean(busy[name]) || bee2Open
     const deps = Object.keys(entry.dependencies ?? {})
 
     return (
@@ -144,7 +155,8 @@ function InstalledRow({ name, entry }) {
 
 /** What's installed from BeePM (by you or as dependencies), with updates. */
 export default function InstalledView({ query, onNavigate }) {
-    const { installed, outdated, bee2, job, install, refreshInstalled, updateFor } = useApp()
+    const { installed, outdated, bee2, bee2Open, job, install, refreshInstalled, updateFor } =
+        useApp()
     const all = Object.entries(installed).sort(([a], [b]) => a.localeCompare(b))
     const q = query.trim().toLowerCase()
     const shown = q
@@ -171,6 +183,7 @@ export default function InstalledView({ query, onNavigate }) {
                     Open BEE2 once so BeePM knows its version and can check compatibility.
                 </Alert>
             )}
+            <Bee2OpenAlert />
 
             {!all.length ? (
                 <EmptyState
@@ -217,7 +230,7 @@ export default function InstalledView({ query, onNavigate }) {
                                     size="small"
                                     variant="contained"
                                     startIcon={<UpgradeIcon />}
-                                    disabled={!updates || Boolean(job)}
+                                    disabled={!updates || Boolean(job) || bee2Open}
                                     onClick={() => install([], { update: true })}
                                 >
                                     Update all{updates ? ` (${updates})` : ""}

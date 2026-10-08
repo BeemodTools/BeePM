@@ -41,6 +41,20 @@ export function packageHandlers(shared) {
     const { ctx, deps, log, step } = shared
     const plans = new Map() // planId -> plan, until it's applied or discarded
 
+    /**
+     * BEE2 has its packages open while it runs (changing them fails with EBUSY): that's refused,
+     * with code "bee2_running". What's left of a BEE2 that crashed is ended instead.
+     */
+    async function whileBee2IsClosed() {
+        if (!ctx.paths.bee2Dir) return
+        if (await shared.isLocked()) {
+            throw new AppError("BEE2 is open. Close it to install or remove packages.", {
+                code: "bee2_running",
+            })
+        }
+        await shared.endLeftoverBee2()
+    }
+
     return {
         "packages:installed": async () => {
             const installed = await loadInstalled(ctx.paths)
@@ -67,6 +81,7 @@ export function packageHandlers(shared) {
             shared.lock(async () => {
                 const plan = plans.get(planId)
                 if (!plan) throw new AppError("That install plan is out of date. Try again.")
+                await whileBee2IsClosed()
                 plans.delete(planId)
                 const names = plan.steps.map((s) => `${s.name}@${s.to}`)
                 const updating = names.length && plan.steps.every((s) => s.change === "upgrade")
@@ -115,9 +130,10 @@ export function packageHandlers(shared) {
 
         // Refuses (code "has_dependents") if other installed packages need one of them, unless force
         "packages:uninstall": (names, options = {}) =>
-            shared.lock(() => {
+            shared.lock(async () => {
                 const list = specList(names)
                 const force = Boolean(options?.force)
+                await whileBee2IsClosed()
                 return step(`Uninstalling ${listOf(list, "packages")}`, async () => {
                     if (!force) {
                         const installed = await loadInstalled(ctx.paths)

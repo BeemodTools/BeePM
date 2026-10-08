@@ -1,9 +1,12 @@
+import { stat } from "node:fs/promises"
 import path from "node:path"
 import { duplicateRemovals } from "@beepm/core"
 import { bee2Info, findBee2Folder } from "@beepm/core/client"
 import { AppError, isLocalPath, optionalText } from "../util.js"
 
 const CLOSE_WAIT_MS = 2 * 60 * 1000
+// "Close BEE2" in the window waits this long for it to close, then says it didn't
+const CLOSE_NOW_MS = 20 * 1000
 
 const strings = (list) => (Array.isArray(list) ? list.filter((v) => typeof v === "string") : [])
 
@@ -58,6 +61,58 @@ export function bee2Handlers(shared) {
                 suggestion: info.dir ? null : await runningFolder(),
                 moving: shared.hookState?.waitingFor ?? null,
             }
+        },
+
+        /**
+         * { running }: BeePM's BEE2 is open, so it has its package files open: packages can't be
+         * installed, updated or removed until it's closed. (What's left of a BEE2 that crashed
+         * isn't BEE2 open.)
+         */
+        "bee2:running": async () => ({
+            running: Boolean(ctx.paths.bee2Dir) && (await shared.isLocked()),
+        }),
+
+        /** Opens BeePM's BEE2: { opened } (false when it's open already). */
+        "bee2:open": async () => {
+            if (!ctx.paths.bee2Dir) {
+                throw new AppError("Choose where BEE2 is installed first.", {
+                    code: "bee2_not_set",
+                })
+            }
+            if (await shared.isLocked()) return { opened: false }
+            let program = null
+            for (const name of ["BEE2.exe", "BEE2"]) {
+                const file = path.join(ctx.paths.bee2Dir, name)
+                if ((await stat(file).catch(() => null))?.isFile()) {
+                    program = file
+                    break
+                }
+            }
+            if (!program) throw new AppError(`BEE2 isn't in ${ctx.paths.bee2Dir} anymore.`)
+            deps.openProgram(program)
+            return { opened: true }
+        },
+
+        /**
+         * Asks BeePM's BEE2 to close the way its close button does (it saves), and waits for it:
+         * { closed }. It can't be asked while a window of its own is open in it (code
+         * "bee2_busy"), and it may not close (code "bee2_running"). Never forced.
+         */
+        "bee2:close": async () => {
+            if (!ctx.paths.bee2Dir || !(await shared.isLocked())) return { closed: true }
+            if (!(await shared.bee2Process.askToClose(ctx.paths.bee2Dir))) {
+                throw new AppError(
+                    "BEE2 has a window open. Close that window in BEE2, then try again.",
+                    { code: "bee2_busy" },
+                )
+            }
+            if (!(await waitForExit(CLOSE_NOW_MS))) {
+                throw new AppError("BEE2 didn't close. Check whether it's asking you something.", {
+                    code: "bee2_running",
+                })
+            }
+            log.info("Closed BEE2")
+            return { closed: true }
         },
 
         "bee2:pick-folder": async () => {

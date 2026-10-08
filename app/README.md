@@ -36,14 +36,30 @@ Environment variables (also used by the CLI):
 | `BEE2_CONFIG_DIR`   | `%APPDATA%/BEEMOD2/config` | BEE2's config folder                                    |
 | `BEEPM_NO_PROTOCOL` | unset                      | Don't register the `beepm://` handler (tests, previews) |
 
+To try a built copy (`release/win-unpacked/BeePM.exe`) next to the installed BeePM, also set
+`BEEPM_USER_DATA` to an empty folder (Electron's own files, so it isn't the same BeePM as the
+installed one, which it would otherwise hand over to) and `BEEPM_NO_LOGIN_ITEM=1` (it would
+replace the installed app's "start with Windows" entry).
+
 ## Packaging
 
 `npm run build` runs `vite build`, then electron-builder (settings in `electron-builder.js`),
-and leaves the installer in `release/` (`BeePM-Setup-<version>.exe`, not code-signed). The page
+and leaves the installer in `release/` (`BeePM-Setup-<version>.exe`, not code-signed). Last,
+`scripts/verify-build.js` checks the packed app against its sources, file by file: a file that
+changes while electron-builder packs it shifts every file after it, and the installed BeePM
+doesn't start. A build that fails it has its installer deleted; build again without changing
+anything meanwhile.
+
+The installer (`build/installer.nsh`) closes BeePM to replace its files, then starts it again in
+the tray when it runs in the background (it has its "start with Windows" entry). Uninstalling
+removes that entry; updating keeps it. After "Restart to update", BeePM comes back the way it
+was: in the tray if its window wasn't open. The page
 is bundled by Vite, so the packaged app only needs the main process' dependencies:
-`@beepm/core` and what it uses (`semver`, `yauzl`, `yazl`, `lzma1`), and `electron-updater`. electron-builder copies
-`@beepm/core` out of the workspace into the package. React and MUI get packed too, since
-they're `dependencies`; moving them to `devDependencies` would make the package smaller.
+`@beepm/core` and what it uses (`semver`, `yauzl`, `yazl`, `lzma1`, `pngjs`, `jpeg-js`), and
+`electron-updater`. electron-builder copies `@beepm/core` out of the workspace into the package.
+What only the page uses (React, MUI, emotion) is in `devDependencies`, so it isn't packed again:
+that kept `app.asar` at a few MB instead of 45 MB in 26,000 files, which Electron indexes at
+every start and Windows scans after every install.
 
 Icons, made from BeePM.png: `build/icon.ico` is the app's, the installer's and the
 uninstaller's icon, and `build/installerSidebar.bmp` is the side image of the installer and

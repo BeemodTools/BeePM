@@ -11,6 +11,7 @@ const EVENTS = [
     "app:update-status",
     "auth:changed",
     "auth:login-result",
+    "bee2:changed",
     "packages:changed",
     "packages:progress",
     "publish:progress",
@@ -57,6 +58,9 @@ contextBridge.exposeInMainWorld("beepm", {
     },
     bee2: {
         status: call("bee2:status"),
+        running: call("bee2:running"),
+        open: call("bee2:open"),
+        close: call("bee2:close"),
         pickFolder: call("bee2:pick-folder"),
         setFolder: call("bee2:set-folder"),
         check: call("bee2:check"),

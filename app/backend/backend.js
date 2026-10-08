@@ -6,6 +6,8 @@ import { duplicateRemovals, hasDuplicates } from "@beepm/core"
 import {
     applyPlan,
     askBee2ToClose,
+    bee2ErrorPackage,
+    bee2LogProblems,
     findBee2Folder,
     checkBee2Packages,
     createClientContext,
@@ -18,7 +20,7 @@ import {
     leaveHook,
     outdated,
     planInstall,
-    readBee2Problems,
+    readBee2Log,
     RegistryError,
     removePackageFiles,
     scanBee2,
@@ -382,12 +384,17 @@ export async function createBackend(deps = {}) {
     shared.disposers.push(async () => logWatch?.handle.close())
 
     // In the background: looks at BEE2's packages when BEE2 opens (see updateWatcher.js)
+    let bee2WasRunning = null
     const watcher = createUpdateWatcher({
         log,
-        // Every few seconds; BEE2's log tells sooner
-        isBee2Running: () => {
+        // Every few seconds; BEE2's log tells sooner. The window hears when that changes (it
+        // disables installing while BEE2 is open).
+        isBee2Running: async () => {
             watchBee2Log()
-            return bee2Process.isRunning()
+            const running = await bee2Process.isRunning()
+            if (bee2WasRunning !== null && running !== bee2WasRunning) send("bee2:changed", {})
+            bee2WasRunning = running
+            return running
         },
         isLocked: () => shared.isLocked(),
         // A launched BEE2 that isn't BeePM's (or BeePM doesn't know one): its folder
@@ -455,18 +462,57 @@ export async function createBackend(deps = {}) {
             })
         },
         apply: (work) => shared.applyWork(work),
-        // What broke BeePM's BEE2 (its log), and the files of those packages in its folder
+        // What broke BeePM's BEE2 (the log of its run), and the files of those packages in its
+        // folder: the package BEE2 named, else the first one the error names (by its ID or an
+        // item's). An error that names none comes with no files.
         async brokenPackages({ since }) {
             if (!ctx.paths.bee2Dir) return []
-            const problems = await readBee2Problems(ctx.paths.bee2Dir, { since })
-            if (!problems.length) return []
-            const found = await scanBee2(ctx.paths)
-            return problems.flatMap(({ packageId, message }) => {
-                const copies = found.filter((pkg) => pkg.id === packageId)
-                if (!copies.length) return []
-                const name = copies.find((pkg) => pkg.name)?.name ?? path.basename(copies[0].path)
-                return [{ name, files: copies.map((pkg) => pkg.path), message }]
-            })
+            const bee2Log = await readBee2Log(ctx.paths.bee2Dir, { since })
+            if (!bee2Log) {
+                log.info("BEE2 wrote no log for that run")
+                return []
+            }
+            const logName = path.basename(bee2Log.file)
+            const problems = bee2LogProblems(bee2Log.text)
+            if (!problems.length) {
+                log.info(`${logName} shows no errors`)
+                return []
+            }
+            const packages = new Map() // package ID -> its copies
+            const items = new Map() // item ID -> the IDs of the packages with it
+            for (const pkg of await scanBee2(ctx.paths)) {
+                if (!pkg.id) continue
+                packages.set(pkg.id, [...(packages.get(pkg.id) ?? []), pkg])
+                for (const item of pkg.items ?? []) {
+                    items.set(item, new Set([...(items.get(item) ?? []), pkg.id]))
+                }
+            }
+            const findPackage = (id) =>
+                packages.has(id) ? id : items.get(id)?.size === 1 ? [...items.get(id)][0] : null
+            const broken = new Map() // package ID (or a message without one) -> what's offered
+            for (const { packageId, message } of problems) {
+                const id = packages.has(packageId)
+                    ? packageId
+                    : bee2ErrorPackage(message, findPackage)
+                if (!id) {
+                    log.info(`${logName}: ${message} -> it names no package`)
+                    broken.set(message, { name: null, files: [], message })
+                    continue
+                }
+                const copies = packages.get(id)
+                const files = copies.map((pkg) => pkg.path)
+                const name = copies.find((pkg) => pkg.name)?.name ?? path.basename(files[0])
+                log.info(
+                    `${logName}: ${message} -> ${name} (${files.map((f) => path.basename(f)).join(", ")})`,
+                )
+                if (!broken.has(id)) broken.set(id, { name, files, message })
+            }
+            return [...broken.values()]
+        },
+        // BEE2's log of the run that was running then (it said what broke it)
+        async openBee2Log({ since }) {
+            const log = ctx.paths.bee2Dir ? await readBee2Log(ctx.paths.bee2Dir, { since }) : null
+            if (log) await shared.deps.openPath(log.file)
         },
         // BEE2 just closed: a hook it kept from being undone can be now
         whenClosed: async () => {

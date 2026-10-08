@@ -331,12 +331,16 @@ banReason, handle}`, `GET /v1/admin/audit`, `POST /v1/admin/import-legacy`.
   one) is asked about first: Use this BEE2 switches BeePM to it; Not now or Don't ask again
   (kept in `config/app-settings.json`) leave it alone: it isn't checked, and never closed.
   The corner windows chime when they appear. When BeePM's BEE2 closes, the log of that run
-  (core's `bee2log.js`) says whether a package broke it: a crash on a package it couldn't parse
-  ("Error occured parsing TEMP23:VERSION item!", with the cause before it) or "An error
-  occurred" / "Multiple errors occurred when loading packages" naming one (not duplicates,
-  which the BEE2 check handles; BEE2's warnings don't count). "BEE2 couldn't load <package>"
-  offers Remove it (to the Recycle Bin, uninstalled if it's BeePM's; BEE2 opens again) or Not
-  now. A run's log is the first `<BEE2>/logs/bee2*.log` written to after it started, not always
+  (core's `bee2log.js`) says whether something broke it: any crash ("Trio exited with
+  exception", or "Uncaught Tk Exception": the errors in its traceback, not BEE2's AppError
+  warnings) or "An error occurred" / "Multiple errors occurred when loading packages" (not
+  duplicates, which the BEE2 check handles, nor BEE2's known warnings listed there). The package
+  is the one BEE2 names ("Error occured parsing TEMP23:VERSION item!", `package "X"`), else the
+  first ID in the error that's a package's or an item's (from the scan's info.txt items:
+  'Item ITEM_X's style referenced invalid style "Y"' is ITEM_X's package, not Y's). "BEE2
+  couldn't load <package>" offers Remove it (to the Recycle Bin, uninstalled if it's BeePM's;
+  BEE2 opens again) or Not now; an error that names no package gets "BEE2 crashed" with the
+  error and Open its log. A run's log is the first `<BEE2>/logs/bee2*.log` written to after it started, not always
   `bee2.log`: a log that's still open can't be moved aside, so the next run writes `bee2.1.log`.
   BEE2 4.46 can crash and leave its process running without a window (it logs "Trio exited
   with exception", shows its error, then hangs). That process holds its log and package files
@@ -351,4 +355,6 @@ banReason, handle}`, `GET /v1/admin/audit`, `POST /v1/admin/import-legacy`.
 - **BeePM's own updates** (the installed desktop app): electron-updater looks at the GitHub
   releases of BeemodTools/BeePM after startup and every 6 hours, downloads a newer version in
   the background and asks in the corner whether to restart now; otherwise the update installs
-  when BeePM quits (see app/README.md, Releasing).
+  when BeePM quits (see app/README.md, Releasing). Restarting brings BeePM back as it was (in
+  the tray if its window wasn't open), and installing by hand starts it again in the tray when
+  it runs in the background (`app/build/installer.nsh`).

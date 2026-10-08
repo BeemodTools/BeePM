@@ -34,12 +34,14 @@ function setup({ found = {}, answers = {}, running = false, options = {}, broken
         switched: [],
         ignoredBee2: [],
         endedLeftovers: 0,
+        logsOpened: [], // the runs (when they started) whose log was opened
+        logged: [],
     }
     const bee2 = { running, stays: false, busy: false, other: null, ignored: false, leftovers: [] }
     const updated = () => seen.applied.flatMap((work) => work.update)
     const watcher = createUpdateWatcher(
         {
-            log: quiet,
+            log: { info: (text) => seen.logged.push(text), warn: (text) => seen.logged.push(text) },
             sleep: async () => {},
             isBee2Running: async () => bee2.running || Boolean(bee2.other),
             isLocked: async () => bee2.running,
@@ -92,6 +94,7 @@ function setup({ found = {}, answers = {}, running = false, options = {}, broken
             // What broke BEE2, if its log was written after `since` (when BEE2 opened)
             brokenPackages: async ({ since }) => (since > 0 ? broken : []),
             leftoverBee2: async () => bee2.leftovers,
+            openBee2Log: async ({ since }) => seen.logsOpened.push(since),
             endLeftovers: async () => {
                 seen.endedLeftovers += bee2.leftovers.length
                 bee2.leftovers = []
@@ -127,6 +130,8 @@ test("a package that broke BEE2: removing it is offered when BEE2 closes, then B
     )
     assert.deepEqual(removing.seen.applied, [work({ remove: files })])
     assert.deepEqual(removing.seen.opened, [BEE2_EXE])
+    // Every close is in the log, with how long BEE2 ran
+    assert.ok(removing.seen.logged.some((line) => /^BEE2 closed after \d+ s$/.test(line)))
 
     // Not now: it stays, and BEE2 isn't opened
     const later = setup({ broken })
@@ -180,6 +185,22 @@ test("BEE2 left running after a crash BeePM didn't see: what broke it is offered
     later.bee2.running = true
     await later.watcher.check()
     assert.equal(later.seen.endedLeftovers, 1)
+})
+
+test("what stopped BEE2 names no package: that's said, and its log opens", async () => {
+    const broken = [{ name: null, files: [], message: "KeyError: 'palette'" }]
+    const { watcher, seen, bee2 } = setup({ broken, answers: { crashed: "log" } })
+    bee2.running = true
+    await watcher.check()
+    bee2.running = false // it crashed
+    await watcher.check()
+    assert.deepEqual(
+        seen.asked.map((q) => [q.kind, q.message]),
+        [["crashed", "KeyError: 'palette'"]],
+    )
+    assert.equal(seen.logsOpened.length, 1)
+    assert.ok(seen.logsOpened[0] > 0) // the log of the run that crashed
+    assert.deepEqual([seen.applied, seen.opened], [[], []])
 })
 
 test("a crash BeePM saw: what's left of that BEE2 isn't asked about a second time", async () => {

@@ -14,7 +14,16 @@ import "./index.css"
 // The same page also draws the corner windows that ask things (backend/main.js ask), the window
 // their "Choose" opens (showReview), and "View contents" windows (showContents)
 const params = new URLSearchParams(window.location.search)
-const TOASTS = ["update", "close", "duplicates", "adopt", "use-bee2", "app-update", "broken"]
+const TOASTS = [
+    "update",
+    "close",
+    "duplicates",
+    "adopt",
+    "use-bee2",
+    "app-update",
+    "broken",
+    "crashed",
+]
 const toast = TOASTS.includes(params.get("toast")) ? params.get("toast") : null
 const review = params.has("review") ? params.get("review") : null
 const contents = params.get("contents")

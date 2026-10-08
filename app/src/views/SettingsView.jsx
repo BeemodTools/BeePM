@@ -29,7 +29,9 @@ import GitHubIcon from "@mui/icons-material/GitHub"
 import LinkIcon from "@mui/icons-material/Link"
 import LoginIcon from "@mui/icons-material/Login"
 import LogoutIcon from "@mui/icons-material/Logout"
+import PlayArrowIcon from "@mui/icons-material/PlayArrow"
 import RestartAltIcon from "@mui/icons-material/RestartAlt"
+import StopCircleIcon from "@mui/icons-material/StopCircle"
 import UpdateIcon from "@mui/icons-material/Update"
 import { api, onEvent } from "../api.js"
 import Brand from "../components/Brand.jsx"
@@ -550,6 +552,19 @@ function Bee2Section() {
             <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap", mt: 2 }}>
                 <Button startIcon={<FactCheckIcon />} onClick={app.openReview} disabled={!ready}>
                     Check packages
+                </Button>
+                <Button
+                    startIcon={app.bee2Open ? <StopCircleIcon /> : <PlayArrowIcon />}
+                    onClick={app.bee2Open ? app.closeBee2 : app.openBee2}
+                    disabled={!ready || Boolean(app.bee2Action)}
+                >
+                    {app.bee2Action === "opening"
+                        ? "Opening…"
+                        : app.bee2Action === "closing"
+                          ? "Closing…"
+                          : app.bee2Open
+                            ? "Close BEE2"
+                            : "Open BEE2"}
                 </Button>
                 <Button
                     startIcon={<FolderOpenIcon />}

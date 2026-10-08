@@ -28,15 +28,25 @@
  *   ask(question) -> the answer; question.kind: "duplicates" ("delete" | "choose" | "later"),
  *     "adopt" ("use" | "keep" | "choose" | "later"), "update" ("update" | "later" | "never"),
  *     "close" ("now" | "later"), "use-bee2" ("use" | "later" | "never"),
- *     "broken" ({ name, message }: "remove" | "later"),
+ *     "broken" ({ name, message }: "remove" | "later"), "crashed" ({ message }: what stopped
+ *     BEE2 names no package; "log" | "later"),
  *   choose(found) (a window to choose in, for what review() found), keepOwn(ids), ignore(name),
  *   apply({ remove, adopt, update }), notify(text), log,
  *   brokenPackages({ since }) (optional) -> [{ name, files, message }]: what broke the BEE2 that
- *   was running then (ms), from the log of its run,
+ *   was running then (ms), from the log of its run (no files: no package can be told),
+ *   openBee2Log({ since }) (optional: shows that log),
  *   leftoverBee2() (optional) -> [{ pid, program, started, leftover }]: what's left of BeePM's
  *   BEE2 after it crashed (leftover: when its run ended), endLeftovers() (optional) ends it,
  *   whenClosed() (optional: BEE2 was just closed), sleep(ms) (optional)
  */
+
+/** How long BEE2 ran, for the log: "3 s", "12 min", "2 h". */
+const howLong = (ms) =>
+    ms < 120 * 1000
+        ? `${Math.max(0, Math.round(ms / 1000))} s`
+        : ms < 120 * 60 * 1000
+          ? `${Math.round(ms / 60000)} min`
+          : `${Math.round(ms / 3600000)} h`
 
 const noWork = () => ({ remove: [], adopt: [], update: [] })
 const isEmpty = (work) => !work.remove.length && !work.adopt.length && !work.update.length
@@ -188,14 +198,29 @@ export function createUpdateWatcher(
         ours = { program, since: Date.now() }
     }
 
-    /** BEE2 just closed: if a package broke it, removing it (and opening BEE2 again) is offered. */
+    /**
+     * BEE2 just closed: if a package broke it, removing it (and opening BEE2 again) is offered.
+     * If what stopped BEE2 names no package, that's said, with its log a click away.
+     */
     async function offerRemoval(run) {
         const broken = await deps.brokenPackages({ since: run.since }).catch((err) => {
             deps.log.warn(`Couldn't read BEE2's log: ${err.message}`)
             return []
         })
+        const named = broken.filter((pkg) => pkg.files.length)
+        if (!named.length && broken.length) {
+            const { message } = broken[0]
+            const answer = await deps.ask({ kind: "crashed", message })
+            deps.log.info(`BEE2 stopped (${message}): ${answer}`)
+            if (answer === "log") {
+                await deps.openBee2Log?.({ since: run.since }).catch((err) => {
+                    deps.log.warn(`Couldn't open BEE2's log: ${err.message}`)
+                })
+            }
+            return
+        }
         const remove = []
-        for (const pkg of broken) {
+        for (const pkg of named) {
             const answer = await deps.ask({ kind: "broken", name: pkg.name, message: pkg.message })
             deps.log.info(`${pkg.name} broke BEE2 (${pkg.message}): ${answer}`)
             if (answer === "remove") remove.push(...pkg.files)
@@ -226,6 +251,9 @@ export function createUpdateWatcher(
         if (closed) {
             const run = ours
             ours = null
+            deps.log.info(
+                run ? `BEE2 closed after ${howLong(Date.now() - run.since)}` : "BEE2 closed",
+            )
             if (run && deps.brokenPackages) {
                 // What's left of it if it crashed is this run's: not asked about again below
                 for (const proc of await leftovers()) handled.add(leftoverKey(proc))
@@ -237,7 +265,8 @@ export function createUpdateWatcher(
             const left = (await leftovers()).filter((proc) => !handled.has(leftoverKey(proc)))
             for (const proc of left) handled.add(leftoverKey(proc))
             if (left.length) {
-                deps.log.info("BEE2 crashed and was left running: looking at its log")
+                const ran = howLong(left[0].leftover - left[0].started)
+                deps.log.info(`BEE2 crashed after ${ran} and was left running: looking at its log`)
                 // It's opened again (after removing what broke it) only if that was just now
                 const recent =
                     Date.now() - Math.max(...left.map((p) => p.leftover)) < reopenWithinMs

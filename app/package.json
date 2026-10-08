@@ -8,7 +8,7 @@
     "author": "Areng",
     "scripts": {
         "dev": "concurrently -k -s command-app -n vite,app \"vite\" \"electron .\"",
-        "build": "vite build && electron-builder",
+        "build": "vite build && electron-builder && node scripts/verify-build.js",
         "start": "electron .",
         "format": "prettier --write .",
         "lint": "eslint . --fix",
@@ -16,17 +16,16 @@
     },
     "dependencies": {
         "@beepm/core": "*",
-        "@emotion/react": "^11.14.0",
-        "@emotion/styled": "^11.14.1",
-        "@mui/icons-material": "^7.2.0",
-        "@mui/material": "^7.2.0",
         "electron-updater": "^6.8.9",
-        "react": "^19.1.0",
-        "react-dom": "^19.1.0",
         "semver": "^7.7.1"
     },
     "devDependencies": {
+        "@electron/asar": "^3.4.1",
+        "@emotion/react": "^11.14.0",
+        "@emotion/styled": "^11.14.1",
         "@eslint/js": "^9.30.1",
+        "@mui/icons-material": "^7.2.0",
+        "@mui/material": "^7.2.0",
         "@types/react": "^19.1.8",
         "@types/react-dom": "^19.1.6",
         "@vitejs/plugin-react": "^4.7.0",
@@ -39,6 +38,8 @@
         "eslint-plugin-react-refresh": "^0.4.20",
         "globals": "^16.3.0",
         "prettier": "^3.6.2",
+        "react": "^19.1.0",
+        "react-dom": "^19.1.0",
         "vite": "^6.4.1"
     }
 }

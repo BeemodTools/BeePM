@@ -25,6 +25,8 @@ export default {
     nsis: {
         // No spaces: GitHub renames them in release files, and latest.yml has to match
         artifactName: "${productName}-Setup-${version}.${ext}",
+        // Starts BeePM again in the tray after installing (when it runs in the background)
+        include: "build/installer.nsh",
         oneClick: false,
         allowToChangeInstallationDirectory: true,
         perMachine: false,
