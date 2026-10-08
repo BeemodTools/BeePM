@@ -4,6 +4,7 @@ import DownloadIcon from "@mui/icons-material/Download"
 import UpgradeIcon from "@mui/icons-material/Upgrade"
 import { formatNumber, isCompatible } from "../lib/format.js"
 import { useApp } from "../state/context.js"
+import { ContentCounts, FoundChips } from "./Contents.jsx"
 
 /** One search result: click it for the package details. */
 export default function PackageCard({ pkg }) {
@@ -109,6 +110,7 @@ export default function PackageCard({ pkg }) {
                         <DownloadIcon sx={{ fontSize: 14 }} />
                         {formatNumber(pkg.downloads)}
                     </Box>
+                    <ContentCounts counts={pkg.contents} />
                 </Box>
                 {pkg.description && (
                     <Typography
@@ -125,6 +127,7 @@ export default function PackageCard({ pkg }) {
                         {pkg.description}
                     </Typography>
                 )}
+                <FoundChips found={pkg.found} />
             </Box>
 
             <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexShrink: 0 }}>

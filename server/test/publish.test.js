@@ -66,6 +66,16 @@ test("publish, read the packument, and download the exact bytes", async () => {
     assert.deepEqual((await api(t, null, "GET", "/v1/lookup?beeId=alice_items")).body.packages, [
         "@alice/alice-items",
     ])
+    // Many BEE2 IDs at once: only the ones on BeePM come back (invalid IDs are skipped)
+    const many = await api(t, null, "POST", "/v1/lookup", {
+        beeIds: ["alice_items", "NOT_ON_BEEPM", "not an id!", 42],
+    })
+    assert.equal(many.status, 200)
+    assert.deepEqual(many.body.packages, { ALICE_ITEMS: ["@alice/alice-items"] })
+    const tooMany = await api(t, null, "POST", "/v1/lookup", {
+        beeIds: Array.from({ length: 1001 }, (_, i) => `ID_${i}`),
+    })
+    assert.equal(tooMany.status, 400)
 })
 
 test("versions are immutable and the BEE2 ID can't change or be reused", async () => {

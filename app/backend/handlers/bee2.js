@@ -1,10 +1,8 @@
-import { randomUUID } from "node:crypto"
 import path from "node:path"
 import { duplicateRemovals } from "@beepm/core"
 import { bee2Info, findBee2Folder } from "@beepm/core/client"
 import { AppError, isLocalPath, optionalText } from "../util.js"
 
-const MAX_REVIEWS = 10
 const CLOSE_WAIT_MS = 2 * 60 * 1000
 
 const strings = (list) => (Array.isArray(list) ? list.filter((v) => typeof v === "string") : [])
@@ -24,7 +22,7 @@ const copyForWindow = ({ path: file, file: rel, name, modified, managed }) => ({
  */
 export function bee2Handlers(shared) {
     const { ctx, deps, log, step } = shared
-    const reviews = new Map() // reviewId -> the check the window shows, until it's acted on
+    const { reviews } = shared // reviewId -> a check the user is shown, until it's acted on
 
     /** BEE2's folder from the running BEE2 (to suggest it), or null. */
     async function runningFolder() {
@@ -84,20 +82,23 @@ export function bee2Handlers(shared) {
             }),
 
         /**
-         * What the BEE2 check finds now, for BeePM's window to choose from: { reviewId,
-         * duplicates, onBeepm, offline }. Each copy of a package has { path, file, name, modified,
-         * managed } (managed: installed from BeePM).
+         * What the BEE2 check finds, to choose from: { reviewId, duplicates, onBeepm, offline }.
+         * With { reviewId } it's that check again (the corner window's "Choose": BEE2's packages
+         * were just looked at), else a new one. Each copy of a package has { path, file, name,
+         * modified, managed } (managed: installed from BeePM).
          */
-        "bee2:check": async () => {
-            const check = await shared.checkBee2()
+        "bee2:check": async (request = {}) => {
+            let reviewId = typeof request?.reviewId === "string" ? request.reviewId : null
+            let check = reviewId ? reviews.get(reviewId) : null
             if (!check) {
-                throw new AppError("Choose where BEE2 is installed first.", {
-                    code: "bee2_not_set",
-                })
+                check = await shared.checkBee2()
+                if (!check) {
+                    throw new AppError("Choose where BEE2 is installed first.", {
+                        code: "bee2_not_set",
+                    })
+                }
+                reviewId = shared.rememberReview(check)
             }
-            const reviewId = randomUUID()
-            reviews.set(reviewId, check)
-            while (reviews.size > MAX_REVIEWS) reviews.delete(reviews.keys().next().value)
             const pkg = (p) => ({ id: p.id, name: p.name, copies: p.copies.map(copyForWindow) })
             return {
                 reviewId,

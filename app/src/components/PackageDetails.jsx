@@ -5,7 +5,6 @@ import {
     Button,
     Chip,
     CircularProgress,
-    Collapse,
     Dialog,
     DialogContent,
     DialogTitle,
@@ -37,6 +36,7 @@ import {
 } from "../lib/format.js"
 import { useLastValue } from "../lib/useLastValue.js"
 import { useApp } from "../state/context.js"
+import { ContentsLink } from "./Contents.jsx"
 import ErrorAlert from "./ErrorAlert.jsx"
 
 const smallChip = { height: 20, fontSize: 11 }
@@ -55,7 +55,8 @@ function Info({ label, children }) {
     )
 }
 
-function OwnersPanel({ name, owners, me, onChanged }) {
+/** Who owns the package. Owners and admins (canManage) add and remove owners here. */
+function Owners({ name, owners, me, canManage, onChanged }) {
     const { askConfirm, notify } = useApp()
     const [handle, setHandle] = useState("")
     const [state, setState] = useState({ busy: false, error: null })
@@ -93,57 +94,73 @@ function OwnersPanel({ name, owners, me, onChanged }) {
         })
 
     return (
-        <Box
-            sx={{
-                mt: 2,
-                p: 2,
-                backgroundColor: "#1f2122",
-                borderRadius: 1,
-                border: "1px solid #3a3a3a",
-            }}
-        >
-            <Typography sx={{ fontSize: 13, color: "#888", mb: 1 }}>
-                Owners can publish new versions, yank, deprecate and unpublish them, and manage
-                owners.
+        <>
+            <Typography variant="subtitle2" sx={{ mt: 3, mb: 0.5 }}>
+                {owners.length === 1 ? "Owner" : "Owners"}
             </Typography>
             {owners.map((owner) => (
-                <Box key={owner} sx={{ display: "flex", alignItems: "center", py: 0.5 }}>
+                <Box
+                    key={owner}
+                    sx={{ display: "flex", alignItems: "center", minHeight: 34, gap: 1 }}
+                >
                     <Typography sx={{ flex: 1, color: "#ddd" }}>
                         @{owner}
-                        {owner === me ? " (you)" : ""}
+                        {owner === me && (
+                            <Box component="span" sx={{ color: "#888" }}>
+                                {" "}
+                                (you)
+                            </Box>
+                        )}
                     </Typography>
-                    <Tooltip
-                        title={
-                            owners.length === 1 ? "A package needs at least one owner" : "Remove"
-                        }
-                    >
-                        <span>
-                            <IconButton
-                                size="small"
-                                disabled={owners.length === 1}
-                                onClick={() => remove(owner)}
-                            >
-                                <DeleteOutlineIcon fontSize="small" />
-                            </IconButton>
-                        </span>
-                    </Tooltip>
+                    {canManage && (
+                        <Tooltip
+                            title={
+                                owners.length === 1
+                                    ? "A package needs at least one owner"
+                                    : `Remove @${owner}`
+                            }
+                        >
+                            <span>
+                                <IconButton
+                                    size="small"
+                                    aria-label={`Remove @${owner}`}
+                                    disabled={owners.length === 1}
+                                    onClick={() => remove(owner)}
+                                >
+                                    <DeleteOutlineIcon fontSize="small" />
+                                </IconButton>
+                            </span>
+                        </Tooltip>
+                    )}
                 </Box>
             ))}
-            <Box sx={{ display: "flex", gap: 1, mt: 1 }}>
-                <TextField
-                    size="small"
-                    placeholder="BeePM handle"
-                    value={handle}
-                    onChange={(event) => setHandle(event.target.value)}
-                    onKeyDown={(event) => event.key === "Enter" && add()}
-                    sx={{ flex: 1 }}
-                />
-                <Button variant="outlined" onClick={add} disabled={state.busy || !handle.trim()}>
-                    Add owner
-                </Button>
-            </Box>
-            {state.error && <ErrorAlert error={state.error} sx={{ mt: 1.5 }} />}
-        </Box>
+            {canManage && (
+                <>
+                    <Box sx={{ display: "flex", gap: 1, mt: 1 }}>
+                        <TextField
+                            size="small"
+                            placeholder="BeePM handle"
+                            value={handle}
+                            onChange={(event) => setHandle(event.target.value)}
+                            onKeyDown={(event) => event.key === "Enter" && add()}
+                            sx={{ flex: 1 }}
+                        />
+                        <Button
+                            variant="outlined"
+                            onClick={add}
+                            disabled={state.busy || !handle.trim()}
+                        >
+                            Add owner
+                        </Button>
+                    </Box>
+                    <Typography sx={{ fontSize: 12, color: "#888", mt: 0.75 }}>
+                        Owners can publish, yank, deprecate and unpublish versions, and add or
+                        remove owners.
+                    </Typography>
+                    {state.error && <ErrorAlert error={state.error} sx={{ mt: 1.5 }} />}
+                </>
+            )}
+        </>
     )
 }
 
@@ -265,7 +282,6 @@ function DetailsBody({ name, onClose }) {
     const app = useApp()
     const { auth, installed, bee2Version, job, busy, registryVersion } = app
     const [state, setState] = useState({ loading: true, doc: null, error: null })
-    const [ownersOpen, setOwnersOpen] = useState(false)
     const [menu, setMenu] = useState(null) // a version's actions: { anchor, version }
     const [manageAnchor, setManageAnchor] = useState(null) // the package's owner/admin actions
     const [watch, setWatch] = useState(null) // automatic GitHub releases (owners see it)
@@ -558,12 +574,17 @@ function DetailsBody({ name, onClose }) {
                             }}
                         >
                             <Info label="Latest version">{doc.latest ?? "None"}</Info>
-                            <Info label={doc.owners.length === 1 ? "Owner" : "Owners"}>
-                                {doc.owners.map((owner) => `@${owner}`).join(", ")}
-                            </Info>
                             <Info label="Downloads">{formatNumber(doc.downloads)}</Info>
                             <Info label="Updated">{formatDate(doc.updatedAt)}</Info>
                         </Box>
+                        {doc.latest && (
+                            <ContentsLink
+                                name={name}
+                                version={doc.latest}
+                                title={doc.displayName}
+                                counts={doc.contents}
+                            />
+                        )}
 
                         {watch && (
                             <Box
@@ -588,16 +609,13 @@ function DetailsBody({ name, onClose }) {
                             </Box>
                         )}
 
-                        {canManage && (
-                            <Collapse in={ownersOpen} unmountOnExit>
-                                <OwnersPanel
-                                    name={name}
-                                    owners={doc.owners}
-                                    me={user.handle}
-                                    onChanged={app.bumpRegistry}
-                                />
-                            </Collapse>
-                        )}
+                        <Owners
+                            name={name}
+                            owners={doc.owners}
+                            me={user?.handle ?? null}
+                            canManage={canManage}
+                            onChanged={app.bumpRegistry}
+                        />
 
                         <Typography variant="subtitle2" sx={{ mt: 3, mb: 1 }}>
                             Versions
@@ -626,11 +644,6 @@ function DetailsBody({ name, onClose }) {
                 open={Boolean(manageAnchor)}
                 onClose={() => setManageAnchor(null)}
             >
-                {canManage && (
-                    <MenuItem onClick={manage(() => setOwnersOpen((open) => !open))}>
-                        {ownersOpen ? "Hide owners" : "Owners…"}
-                    </MenuItem>
-                )}
                 {canManage && watch && (
                     <MenuItem onClick={manage(stopWatch)}>Stop publishing GitHub releases</MenuItem>
                 )}

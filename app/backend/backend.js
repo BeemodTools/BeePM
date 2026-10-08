@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto"
 import { watch } from "node:fs"
 import { mkdir } from "node:fs/promises"
 import path from "node:path"
@@ -8,12 +9,11 @@ import {
     findBee2Folder,
     checkBee2Packages,
     createClientContext,
-    exists,
     findBee2Program,
     findBee2Programs,
+    hasHook,
     isBee2Running,
     leaveHook,
-    loadConfig,
     outdated,
     planInstall,
     RegistryError,
@@ -33,6 +33,8 @@ import { createAppTokenStore } from "./tokenStore.js"
 import { createUpdateWatcher } from "./updateWatcher.js"
 import { createLock, isExpected, listOf, toFailure } from "./util.js"
 
+const MAX_REVIEWS = 10
+
 /** Stands in for the log when none is given (tests): only bugs are printed. */
 const quietLog = {
     section: (_title, fn) => fn(),
@@ -51,7 +53,8 @@ const quietLog = {
  *   send(channel, payload)                         events for the window
  *   log                                            the log file (logger.js)
  *   trash(file)                                    deletes to the Recycle Bin (else: backups)
- *   ask(question), showReview(), notify(text), openProgram(file), backgroundDefault,
+ *   showContents(name, version, title)             a "View contents" window
+ *   ask(question), showReview(reviewId), notify(text), openProgram(file), backgroundDefault,
  *   onSettingsChanged(settings)                    running in the background (updateWatcher.js)
  *   bee2Process                                    stand-ins for { isRunning(folder?),
  *                                                  programs(), findProgram(folder?),
@@ -112,6 +115,7 @@ export async function createBackend(deps = {}) {
             openExternal: deps.openExternal ?? (async () => {}),
             openPath: deps.openPath ?? (async () => ""),
             openProgram: deps.openProgram ?? (() => {}),
+            showContents: deps.showContents ?? (() => {}),
             showOpenDialog:
                 deps.showOpenDialog ?? (async () => ({ canceled: true, filePaths: [] })),
         },
@@ -127,6 +131,17 @@ export async function createBackend(deps = {}) {
             }
         },
         onSettingsChanged: deps.onSettingsChanged ?? (() => {}),
+
+        /** BEE2 checks shown to the user, by reviewId, so choices are made on what they saw. */
+        reviews: new Map(),
+        rememberReview(check) {
+            const reviewId = randomUUID()
+            this.reviews.set(reviewId, check)
+            while (this.reviews.size > MAX_REVIEWS) {
+                this.reviews.delete(this.reviews.keys().next().value)
+            }
+            return reviewId
+        },
 
         /**
          * BEE2's program file: from BEE2 if it's running, which is remembered, or else the one
@@ -181,29 +196,39 @@ export async function createBackend(deps = {}) {
          */
         hookState: null,
         async leaveHook() {
-            const config = await loadConfig(ctx.paths)
-            if (!config.hook && !(await exists(ctx.paths.hookedPackages))) {
+            if (!(await hasHook(ctx))) {
                 this.hookState = null
                 return null
             }
             const running = await bee2Process.isRunning()
             const program = running || !ctx.paths.bee2Dir ? await this.bee2Program() : null
             const result = await this.lock(() => leaveHook(ctx, { program, running }))
-            if (result?.done) {
+            const restored = result && "restored" in result
+            const notice = (severity, message) => send("app:notice", { severity, message })
+            if (restored) {
                 log.info(
-                    `BEE2 isn't hooked anymore (packages folder: ${result.restored ?? "its default"}); moved ${result.moved} of BeePM's packages into ${ctx.paths.packages}`,
+                    `BEE2 isn't hooked anymore (packages folder: ${result.restored ?? "its default"})`,
                 )
+            }
+            if (result?.moved) {
+                log.info(`Moved ${result.moved} of BeePM's packages into ${ctx.paths.packages}`)
                 send("packages:changed", {})
-                send("app:notice", {
-                    severity: "success",
-                    message:
-                        "BEE2 loads its own packages folder again, with BeePM's packages in it.",
-                })
-            } else if (result && result.waitingFor !== this.hookState?.waitingFor) {
+                notice(
+                    "success",
+                    "BEE2 loads its own packages folder again, with BeePM's packages in it.",
+                )
+            } else if (restored && result.done) {
+                notice("success", "BEE2 loads its own packages folder again.")
+            } else if (restored) {
+                notice(
+                    "info",
+                    "BEE2 loads its own packages folder again. Choose where BEE2 is in Settings to move BeePM's packages there.",
+                )
+            } else if (result && !result.done && result.waitingFor !== this.hookState?.waitingFor) {
                 log.info(
                     result.waitingFor === "bee2"
                         ? "BEE2 is hooked: that's undone once BEE2 closes"
-                        : "BEE2 is hooked: that's undone once BeePM knows where BEE2 is",
+                        : "BeePM's packages move into BEE2's packages folder once BeePM knows where BEE2 is",
                 )
             }
             this.hookState = result?.done ? null : result
@@ -304,10 +329,40 @@ export async function createBackend(deps = {}) {
         ...manageHandlers(shared),
     }
 
+    /**
+     * BEE2 writes its log the moment it starts, so watching its logs folder tells the watcher
+     * right away (it looks every few seconds otherwise). Follows BEE2's folder; a logs folder
+     * that isn't there yet (BEE2 never ran) is looked for again at the watcher's next look.
+     */
+    let logWatch = null // { dir, handle }
+    function watchBee2Log() {
+        const dir = ctx.paths.bee2Dir ? path.join(ctx.paths.bee2Dir, "logs") : null
+        if (logWatch?.dir === dir) return
+        logWatch?.handle.close()
+        logWatch = null
+        if (!dir) return
+        try {
+            const handle = watch(dir, () => watcher.poke())
+            handle.unref()
+            handle.on("error", () => {
+                handle.close()
+                if (logWatch?.handle === handle) logWatch = null
+            })
+            logWatch = { dir, handle }
+        } catch {
+            // Not there yet
+        }
+    }
+    shared.disposers.push(async () => logWatch?.handle.close())
+
     // In the background: looks at BEE2's packages when BEE2 opens (see updateWatcher.js)
     const watcher = createUpdateWatcher({
         log,
-        isBee2Running: () => bee2Process.isRunning(),
+        // Every few seconds; BEE2's log tells sooner
+        isBee2Running: () => {
+            watchBee2Log()
+            return bee2Process.isRunning()
+        },
         isLocked: () => shared.isLocked(),
         // A launched BEE2 that isn't BeePM's (or BeePM doesn't know one): its folder
         async whichBee2() {
@@ -334,28 +389,33 @@ export async function createBackend(deps = {}) {
         askBee2ToClose: () => bee2Process.askToClose(ctx.paths.bee2Dir),
         openBee2: shared.deps.openProgram,
         ask: deps.ask ?? (async () => "later"),
-        choose: deps.showReview ?? (() => {}),
+        // A window to choose in, showing the check the question came from
+        choose: (found) => deps.showReview?.(found.reviewId ?? null),
         notify: deps.notify ?? (() => {}),
         async review() {
-            const check = await shared.checkBee2()
+            // Updates, except the ones not to ask about again (none if the registry is out of reach)
+            const [check, rows, { ignoredUpdates }] = await Promise.all([
+                shared.checkBee2(),
+                outdated(ctx).catch((err) => {
+                    log.warn(`Couldn't check for updates: ${err.message}`)
+                    return []
+                }),
+                shared.settings.load(),
+            ])
             if (!check) return { duplicates: null, onBeepm: [], updates: [] }
+            // "Choose" shows this check, not a new one
+            const reviewId = shared.rememberReview(check)
             const duplicates = hasDuplicates(check.duplicates)
                 ? {
                       count: check.duplicates.packages.length + check.duplicates.items.length,
                       remove: duplicateRemovals(check.duplicates),
                   }
                 : null
-            // Updates, except the ones not to ask about again (none if the registry is out of reach)
-            const { ignoredUpdates } = await shared.settings.load()
-            const rows = await outdated(ctx).catch((err) => {
-                log.warn(`Couldn't check for updates: ${err.message}`)
-                return []
-            })
             const updates = rows
                 .filter((row) => row.wanted && semver.gt(row.wanted, row.current))
                 .filter((row) => !ignoredUpdates.includes(row.name))
                 .map((row) => ({ name: row.name, from: row.current, to: row.wanted }))
-            return { duplicates, onBeepm: check.onBeepm, updates }
+            return { duplicates, onBeepm: check.onBeepm, updates, reviewId }
         },
         keepOwn: (ids) => shared.keepOwn(ids),
         async ignore(name) {

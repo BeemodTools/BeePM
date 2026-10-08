@@ -5,6 +5,7 @@ import { createDb } from "./db/index.js"
 import { migrate } from "./db/migrate.js"
 import { applyBootstrapAdmins } from "./services/users.js"
 import { createStorage } from "./storage/index.js"
+import { startContentsReader } from "./services/contents.js"
 import { startGithubWatcher } from "./services/githubWatch.js"
 import { startSweeper } from "./sweeper.js"
 
@@ -32,6 +33,8 @@ if (db.kind === "pglite") app.log.warn(`Using the local PGlite database in ${con
 
 const stopSweeper = startSweeper({ db, storage, log: app.log })
 const stopWatcher = startGithubWatcher(app.deps, config.githubWatchMinutes)
+// What versions published before the registry read their contents contain
+const stopReader = startContentsReader({ db, storage, log: app.log })
 await app.listen({ port: config.port, host: config.host })
 app.log.info(`BeePM registry listening on ${config.publicUrl}`)
 
@@ -39,6 +42,7 @@ async function shutdown(signal) {
     app.log.info(`${signal}: shutting down`)
     stopSweeper()
     stopWatcher()
+    stopReader()
     await app.close()
     await db.close()
     process.exit(0)

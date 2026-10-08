@@ -49,6 +49,9 @@ Useful environment variables for the client: `BEEPM_REGISTRY` (registry URL), `B
 beepm bee2 "C:\Games\BEE2"        # where BEE2 is: packages go in its packages folder
 beepm login                       # Discord or GitHub, in your browser
 beepm search items
+beepm search "laser relay"        # also finds packages by what's in them
+beepm search --kind music         # only packages with music (or items, signage, voice...)
+beepm info arengitems --contents  # a package's details, and everything in it
 beepm install @areng14/arengitems # or just: beepm install arengitems
 beepm update
 beepm publish ./MyPackage         # a folder or a .bee_pack; --dry-run only checks it,

@@ -4,11 +4,10 @@ import {
     adoptLegacyInstalls,
     createClientContext,
     createFileTokenStore,
-    exists,
     findBee2Program,
+    hasHook,
     isBee2Running,
     leaveHook,
-    loadConfig,
 } from "@beepm/core/client"
 import { color, info, ok, warn } from "./output.js"
 
@@ -40,8 +39,7 @@ export async function getContext() {
  * back and moves the packages into BEE2's packages folder as soon as it can (see leaveHook).
  */
 export async function leaveHookIfNeeded(ctx) {
-    const config = await loadConfig(ctx.paths)
-    if (!config.hook && !(await exists(ctx.paths.hookedPackages))) return
+    if (!(await hasHook(ctx))) return
     const running = await isBee2Running()
     const program = running || !ctx.paths.bee2Dir ? await findBee2Program() : null
     const result = await leaveHook(ctx, { program, running }).catch((err) => {
@@ -50,10 +48,13 @@ export async function leaveHookIfNeeded(ctx) {
     })
     if (!result) return
     if (result.done) {
-        ok(`BEE2 loads its own packages folder again, and BeePM's packages are in it now.`)
+        if (result.moved) {
+            ok(`BEE2 loads its own packages folder again, and BeePM's packages are in it now.`)
+        } else if ("restored" in result) ok("BEE2 loads its own packages folder again.")
     } else if (result.waitingFor === "bee2") {
-        warn("Close BEE2 so BeePM can move its packages into BEE2's packages folder.")
+        warn("BEE2 still loads BeePM's old packages folder. Close BEE2 so BeePM can set it back.")
     } else {
+        if ("restored" in result) ok("BEE2 loads its own packages folder again.")
         warn(
             `BeePM now keeps packages in BEE2's own packages folder. Tell it where BEE2 is: ${color.cyan("beepm bee2 <folder>")}`,
         )

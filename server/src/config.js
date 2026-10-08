@@ -10,6 +10,13 @@ function num(value, fallback) {
     return n
 }
 
+// A URL pasted with quotes or spaces around it (easy to do in a dashboard) still works
+const url = (value) =>
+    String(value ?? "")
+        .trim()
+        .replace(/^(["'])(.*)\1$/, "$2")
+        .trim() || null
+
 function list(value) {
     return (value || "")
         .split(",")
@@ -63,8 +70,8 @@ export function loadConfig(env = process.env) {
         // Optional token for server-side GitHub API calls (release imports, legacy import)
         githubApiToken: env.GITHUB_API_TOKEN || null,
         // Discord channel webhooks: the moderators' activity log, and new versions (optional)
-        discordLogWebhook: env.DISCORD_LOG_WEBHOOK || null,
-        discordReleasesWebhook: env.DISCORD_RELEASES_WEBHOOK || null,
+        discordLogWebhook: url(env.DISCORD_LOG_WEBHOOK),
+        discordReleasesWebhook: url(env.DISCORD_RELEASES_WEBHOOK),
         // How often watched GitHub repos are checked for new releases; 0 turns it off
         githubWatchMinutes: num(env.GITHUB_WATCH_MINUTES, 15),
         // "Continue with a test account" on the login page; never in production.

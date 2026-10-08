@@ -19,13 +19,13 @@ const nothing = { duplicates: null, onBeepm: [], updates: [] }
  * closes when asked, unless `bee2.stays` (the user cancels its prompt) or `bee2.busy` (a dialog is
  * open in it, so it can't be asked).
  */
-function setup({ found = {}, answers = {}, running = false }) {
+function setup({ found = {}, answers = {}, running = false, options = {} }) {
     const seen = {
         asked: [],
         applied: [],
         ignored: [],
         kept: [],
-        chose: 0,
+        chose: [], // the checks a window to choose in was opened for
         closed: 0,
         opened: [],
         notes: [],
@@ -70,6 +70,7 @@ function setup({ found = {}, answers = {}, running = false }) {
             },
             review: async () => ({
                 ...(seen.reviewed++, nothing),
+                reviewId: `check-${seen.reviewed}`,
                 ...found,
                 updates: (found.updates ?? []).filter((u) => !updated().includes(u.name)),
             }),
@@ -78,7 +79,7 @@ function setup({ found = {}, answers = {}, running = false }) {
                 const answer = answers[question.kind]
                 return (typeof answer === "function" ? answer(question) : answer) ?? "later"
             },
-            choose: () => seen.chose++,
+            choose: (found) => seen.chose.push(found.reviewId),
             keepOwn: async (ids) => seen.kept.push(...ids),
             ignore: async (name) => seen.ignored.push(name),
             apply: async (work) => {
@@ -88,10 +89,12 @@ function setup({ found = {}, answers = {}, running = false }) {
             notify: (text) => seen.notes.push(text),
             whenClosed: async () => seen.closedEvents++,
         },
-        { graceMs: 0 },
+        { graceMs: 0, ...options },
     )
     return { watcher, seen, bee2 }
 }
+
+const settle = () => new Promise((resolve) => setTimeout(resolve, 20))
 
 const updates = [
     { name: "@a/items", from: "1.0.0", to: "1.1.0" },
@@ -100,6 +103,26 @@ const updates = [
 ]
 const byName = (map) => (question) => map[question.name]
 const work = (changes) => ({ remove: [], adopt: [], update: [], ...changes })
+
+test("a poke (BEE2 wrote its log) looks right away, not at the next look", async () => {
+    const { watcher, seen, bee2 } = setup({
+        found: { updates: updates.slice(0, 1) },
+        options: { everyMs: 60 * 60 * 1000 },
+    })
+    watcher.poke() // not started: nothing
+    watcher.start() // looks now: BEE2 isn't open
+    bee2.running = true
+    watcher.poke() // during that look: looks again after it
+    await settle()
+    assert.deepEqual(
+        seen.asked.map((q) => q.name),
+        ["@a/items"],
+    )
+    watcher.poke() // BEE2 is known to be open (it keeps writing its log): nothing
+    await settle()
+    assert.equal(seen.reviewed, 1)
+    watcher.stop()
+})
 
 test("when BEE2 opens: asks about each update, then asks to close BEE2 and opens it again", async () => {
     const { watcher, seen, bee2 } = setup({
@@ -243,7 +266,7 @@ test('"Keep mine" isn\'t asked again, and "Choose" opens BeePM\'s window instead
         answers: { duplicates: "choose" },
     })
     await choose.watcher.offer()
-    assert.equal(choose.seen.chose, 1)
+    assert.deepEqual(choose.seen.chose, ["check-1"]) // the check the question came from
     assert.deepEqual(
         choose.seen.asked.map((q) => q.kind),
         ["duplicates"],

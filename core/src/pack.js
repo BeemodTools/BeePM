@@ -226,6 +226,39 @@ export async function readPack(
     }
 }
 
+/**
+ * The files `wanted(name)` picks in a zip, without unpacking anything else: a Map of name ->
+ * Buffer, or of what transform(name, bytes) makes of each one as it's read (null leaves it out).
+ * Files bigger than maxBytes, or ones readPack would refuse, are left out. Meant for zips readPack
+ * accepted (contents.js reads item files and icons with it).
+ */
+export async function readPackFiles(
+    filePath,
+    wanted,
+    { maxBytes = 1024 * 1024, transform = null } = {},
+) {
+    const zipfile = await yauzl.openPromise(filePath, { lazyEntries: true, autoClose: false })
+    const found = new Map()
+    try {
+        for await (const entry of zipfile.eachEntry()) {
+            if (entry.fileName.endsWith("/") || !wanted(entry.fileName)) continue
+            if (entryProblem(entry) || entry.uncompressedSize > maxBytes) continue
+            const bytes = await readEntryBytes(zipfile, entry)
+            const value = transform ? await transform(entry.fileName, bytes) : bytes
+            if (value != null) found.set(entry.fileName, value)
+        }
+    } finally {
+        zipfile.close()
+    }
+    return found
+}
+
+/** readPackFiles, as text. */
+export async function readPackTexts(filePath, wanted, options) {
+    const files = await readPackFiles(filePath, wanted, options)
+    return new Map([...files].map(([name, bytes]) => [name, bytes.toString("utf8")]))
+}
+
 const listSome = (names, max = 10) =>
     names.slice(0, max).join(", ") + (names.length > max ? ` and ${names.length - max} more` : "")
 

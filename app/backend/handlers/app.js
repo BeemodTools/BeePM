@@ -1,4 +1,6 @@
 import { mkdir } from "node:fs/promises"
+import { formatName, parseName } from "@beepm/core"
+import semver from "semver"
 import { AppError, isWebUrl } from "../util.js"
 
 export function appHandlers(shared) {
@@ -10,6 +12,20 @@ export function appHandlers(shared) {
             packagesDir: ctx.paths.packages,
             platform: process.platform,
         }),
+
+        // Package details' "View contents": what a version contains, in a window of its own
+        "app:open-contents": async (name, version, title) => {
+            const parsed = parseName(String(name ?? ""))
+            if (!parsed || typeof version !== "string" || !semver.valid(version)) {
+                throw new AppError("Say which version of which package to show.")
+            }
+            deps.showContents(
+                formatName(parsed.scope, parsed.name),
+                version,
+                typeof title === "string" && title ? title.slice(0, 100) : null,
+            )
+            return {}
+        },
 
         // Only http(s) links: the window must not be able to launch other programs or files
         "app:open-external": async (url) => {
@@ -47,7 +63,6 @@ export function appHandlers(shared) {
             if (Array.isArray(changes?.ignoredBee2)) {
                 update.ignoredBee2 = changes.ignoredBee2.filter((dir) => typeof dir === "string")
             }
-            if (changes?.trayHintShown === true) update.trayHintShown = true
             await shared.settings.update(update)
             const settings = await shared.appSettings()
             log.info(`Settings: run in the background ${settings.background ? "on" : "off"}`)

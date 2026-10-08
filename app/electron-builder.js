@@ -19,7 +19,12 @@ export default {
     win: {
         target: [{ target: "nsis", arch: ["x64"] }],
     },
+    // Where the installed app looks for updates (electron-updater): BeePM's GitHub releases. A
+    // release needs the installer, its .blockmap and latest.yml from release/ (see README).
+    publish: [{ provider: "github", owner: "BeemodTools", repo: "BeePM", releaseType: "release" }],
     nsis: {
+        // No spaces: GitHub renames them in release files, and latest.yml has to match
+        artifactName: "${productName}-Setup-${version}.${ext}",
         oneClick: false,
         allowToChangeInstallationDirectory: true,
         perMachine: false,

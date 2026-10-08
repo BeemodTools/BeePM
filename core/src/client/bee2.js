@@ -265,6 +265,32 @@ async function removeEmptyFolders(dir) {
 // ---------- leaving the hook (earlier 1.0 builds) ----------
 
 /**
+ * What's left of the hook: { config, text: BEE2's config.cfg, hooked: BEE2 still loads BeePM's
+ * old folder, leftover: that folder is still there }.
+ */
+async function readHook(ctx) {
+    const { paths } = ctx
+    const config = await loadConfig(paths)
+    const text = await readBee2Config(ctx.bee2)
+    const setting = text === null ? null : getIniValue(text, "Directories", "package")
+    return {
+        config,
+        text,
+        hooked: samePath(setting, paths.hookedPackages),
+        leftover: await exists(paths.hookedPackages),
+    }
+}
+
+/**
+ * Whether anything of the hook is left for leaveHook to undo: BEE2's setting, BeePM's note of
+ * it, or its folder. Cheap, so callers can skip looking for BEE2's process.
+ */
+export async function hasHook(ctx) {
+    const { config, hooked, leftover } = await readHook(ctx)
+    return hooked || leftover || Boolean(config.hook)
+}
+
+/**
  * Earlier 1.0 builds pointed BEE2's config.cfg at BeePM's own packages folder ("hooking") and
  * kept every package BEE2 loaded there. This puts BEE2's setting back and moves the packages
  * into BEE2's packages folder: BeePM's into its folder there, and the rest (BEE2's own packages
@@ -272,20 +298,42 @@ async function removeEmptyFolders(dir) {
  * so BEE2 loads the same packages as before. Copies of what BEE2 has go to BeePM's backups,
  * except exact ones: BEE2's own packages BeePM downloaded, and imported copies whose original
  * file is unchanged. Those are deleted.
- * It needs BEE2's folder (found from the hook's old setting or `program`, the running BEE2.exe,
- * if it isn't chosen yet), and BEE2 closed while it's hooked: BEE2 writes its config.cfg back
- * when it exits. Returns null if there's nothing to do, { done: false, waitingFor: "folder" |
- * "bee2" }, or { done: true, moved, restored } (moved: BeePM's packages; restored: the setting
- * put back, null for BEE2's default).
+ * BEE2's setting goes back as soon as BEE2 is closed (it writes its config.cfg back when it
+ * exits), even before BeePM knows where BEE2 is. Moving the packages needs BEE2's folder (found
+ * from the hook's old setting or `program`, the running BEE2.exe, if it isn't chosen yet).
+ * Returns null if there's nothing to do, else { done, waitingFor?: "folder" | "bee2", restored?,
+ * moved? }: restored is the setting put back by this call (null: BEE2's default), moved how many
+ * of BeePM's packages moved.
  */
 export async function leaveHook(ctx, { program = null, running = false } = {}) {
     const { paths } = ctx
-    const config = await loadConfig(paths)
-    const text = await readBee2Config(ctx.bee2)
-    const setting = text === null ? null : getIniValue(text, "Directories", "package")
-    const hooked = samePath(setting, paths.hookedPackages)
-    const leftover = await exists(paths.hookedPackages)
+    const { config, text, hooked, leftover } = await readHook(ctx)
     if (!hooked && !config.hook && !leftover) return null
+
+    const result = { done: false }
+    if (hooked && !running) {
+        let original = config.hook ? config.hook.originalPackageDir : undefined
+        if (original === undefined) {
+            // The earliest builds kept a whole copy of config.cfg instead
+            const backup = await readFile(`${ctx.bee2.configFile}.backup`, "utf8").catch(() => null)
+            const value = backup ? getIniValue(backup, "Directories", "package") : null
+            original = samePath(value, paths.hookedPackages) ? null : value
+        }
+        // A folder that's gone (an old setup) would leave BEE2 without packages
+        if (original && path.isAbsolute(original) && !(await exists(original))) original = null
+        await writeFile(
+            ctx.bee2.configFile,
+            original
+                ? setIniValue(text, "Directories", "package", original)
+                : removeIniKey(text, "Directories", "package"), // BEE2 falls back to its default
+        )
+        result.restored = original ?? null
+    }
+    // BEE2 has the hooked packages open, and would write the hooked setting back when it closes
+    const waitForBee2 = { done: false, waitingFor: "bee2" }
+    // Only the setting was left (BeePM's packages moved already)
+    if (!config.hook && !leftover)
+        return hooked && running ? waitForBee2 : { ...result, done: true, moved: 0 }
 
     if (!paths.bee2Dir) {
         const original = config.hook?.originalPackageDir
@@ -300,27 +348,10 @@ export async function leaveHook(ctx, { program = null, running = false } = {}) {
                 break
             }
         }
-        if (!paths.bee2Dir) return { done: false, waitingFor: "folder" }
     }
-    if (hooked && running) return { done: false, waitingFor: "bee2" }
-
-    let restored = null
-    if (hooked) {
-        let original = config.hook ? config.hook.originalPackageDir : undefined
-        if (original === undefined) {
-            // The earliest builds kept a whole copy of config.cfg instead
-            const backup = await readFile(`${ctx.bee2.configFile}.backup`, "utf8").catch(() => null)
-            const value = backup ? getIniValue(backup, "Directories", "package") : null
-            original = samePath(value, paths.hookedPackages) ? null : value
-        }
-        await writeFile(
-            ctx.bee2.configFile,
-            original
-                ? setIniValue(text, "Directories", "package", original)
-                : removeIniKey(text, "Directories", "package"), // BEE2 falls back to its default
-        )
-        restored = original ?? null
-    }
+    if (hooked && running) return waitForBee2
+    // The hook's old setting stays in config.json to find BEE2's folder with later
+    if (!paths.bee2Dir) return { ...result, waitingFor: "folder" }
 
     const installed = await loadInstalled(paths)
     let moved = 0
@@ -378,5 +409,5 @@ export async function leaveHook(ctx, { program = null, running = false } = {}) {
         installed.local = {}
         await saveInstalled(paths, installed)
     }
-    return { done: true, moved, restored }
+    return { ...result, done: true, moved }
 }

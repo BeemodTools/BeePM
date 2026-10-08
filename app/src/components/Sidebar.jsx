@@ -17,14 +17,19 @@ import CloudOffIcon from "@mui/icons-material/CloudOff"
 import ExploreIcon from "@mui/icons-material/Explore"
 import InventoryIcon from "@mui/icons-material/Inventory"
 import LoginIcon from "@mui/icons-material/Login"
+import OpenInNewIcon from "@mui/icons-material/OpenInNew"
 import PublishIcon from "@mui/icons-material/Publish"
 import SettingsIcon from "@mui/icons-material/Settings"
+import { api } from "../api.js"
 import { useApp } from "../state/context.js"
 import Brand from "./Brand.jsx"
+import DiscordIcon from "./DiscordIcon.jsx"
 
 export const SIDEBAR_WIDTH = 220
+const DISCORD_INVITE = "https://discord.gg/jNr7DUsRTC"
 
-function NavItem({ icon: Icon, label, selected, badge, onClick }) {
+/** A view of the app, or (external) a link that opens in the browser. */
+function NavItem({ icon: Icon, label, selected, badge, external, onClick }) {
     const icon = <Icon sx={{ color: selected ? "#2eff7b" : "#888" }} />
     return (
         <ListItemButton
@@ -57,6 +62,7 @@ function NavItem({ icon: Icon, label, selected, badge, onClick }) {
                     },
                 }}
             />
+            {external && <OpenInNewIcon sx={{ fontSize: 16, color: "#666" }} />}
         </ListItemButton>
     )
 }
@@ -150,9 +156,13 @@ function Bee2Chip({ onOpenSettings }) {
 }
 
 export default function Sidebar({ view, onNavigate }) {
-    const { installed } = useApp()
+    const { installed, notify } = useApp()
     const installedCount = Object.keys(installed).length
     const openSettings = () => onNavigate("settings")
+    const openDiscord = async () => {
+        const res = await api.app.openExternal(DISCORD_INVITE)
+        if (!res.ok) notify(res.error, "error")
+    }
     return (
         <Box
             component="nav"
@@ -203,6 +213,7 @@ export default function Sidebar({ view, onNavigate }) {
             </List>
 
             <Box sx={{ borderTop: "1px solid #3a3a3a", pt: 1 }}>
+                <NavItem icon={DiscordIcon} label="Discord" external onClick={openDiscord} />
                 <NavItem
                     icon={SettingsIcon}
                     label="Settings"

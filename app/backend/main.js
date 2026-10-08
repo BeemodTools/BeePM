@@ -18,6 +18,8 @@ import os from "node:os"
 import path from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { beepmPaths } from "@beepm/core/client"
+import electronUpdater from "electron-updater"
+import { createAppUpdater } from "./appUpdater.js"
 import { createBackend } from "./backend.js"
 import { logger } from "./logger.js"
 import { isLocalPath, isWebUrl } from "./util.js"
@@ -31,7 +33,6 @@ const isDev = !app.isPackaged
 const QUEUED_EVENTS = new Set([
     "app:protocol",
     "app:notice",
-    "app:review",
     "auth:changed",
     "auth:login-result",
     "packages:changed",
@@ -44,6 +45,8 @@ const WINDOW_LOG_LEVELS = new Set(["info", "warn", "error", "debug"])
 // %APPDATA%/beepm (which holds the packages and config)
 app.setName("BeePM")
 app.setPath("userData", path.join(app.getPath("appData"), "BeePM Desktop"))
+// The installer's app ID (electron-builder.js): Windows shows notifications as from BeePM
+if (process.platform === "win32") app.setAppUserModelId("com.beepm.app")
 
 // Bugs in the main process go in the log, and BeePM keeps running
 process.on("uncaughtException", (error) => logger.error("Uncaught exception:", error))
@@ -54,9 +57,12 @@ let backend = null
 let rendererReady = false
 const queued = []
 let tray = null
+let appUpdater = null // BeePM's own updates (appUpdater.js), in the installed app only
 let background = false // running in the background: see applyBackground
 // Question windows (showToast): webContents id -> { finish(answer), answers }
 const toastAnswers = new Map()
+let reviewWindow = null // see showReview
+const contentsWindows = new Map() // "View contents" windows, by package@version (showContents)
 
 function send(channel, payload) {
     if (mainWindow && !mainWindow.isDestroyed() && rendererReady) {
@@ -131,14 +137,6 @@ function balloon(content, title = "BeePM") {
         tray.displayBalloon({ iconType: "info", title, content })
 }
 
-/** The first time the window closes in the background: where BeePM went. */
-async function hintTray() {
-    const settings = await backend.appSettings()
-    if (settings.trayHintShown) return
-    balloon("It offers updates when BEE2 opens. Quit it from here.", "BeePM is still running")
-    await backend.invoke("app:update-settings", { trayHintShown: true })
-}
-
 /**
  * The background's questions (updateWatcher.js), each in a corner window; closing one, or
  * leaving it, is "later":
@@ -190,10 +188,100 @@ function ask(question) {
     }
 }
 
-/** BeePM's window, on the BEE2 check: duplicates and packages on BeePM to choose about. */
-function showReview() {
-    showWindow()
-    send("app:review", {})
+/**
+ * BeePM's own updates, from its GitHub releases (installed app only; BEEPM_NO_UPDATE=1 turns
+ * them off). A downloaded update asks in the corner whether to restart now.
+ */
+function startAppUpdates() {
+    if (!app.isPackaged || process.env.BEEPM_NO_UPDATE) return
+    appUpdater = createAppUpdater({
+        updater: electronUpdater.autoUpdater,
+        log: logger,
+        ask: (version) => showToast({ toast: "app-update", version }, ["restart"], 30 * 60 * 1000),
+        onStatus: (status) => send("app:update-status", status),
+    })
+    appUpdater.start()
+}
+
+/** The window's preferences: it only talks to BeePM through preload.cjs. */
+const webPreferences = () => ({
+    preload: path.join(here, "preload.cjs"),
+    contextIsolation: true,
+    nodeIntegration: false,
+    sandbox: true,
+})
+
+/** Loads BeePM's page with a query (the dev server, or dist/index.html). */
+function loadPage(win, query) {
+    const loading = isDev
+        ? win.loadURL(`${DEV_URL}/?${new URLSearchParams(query)}`)
+        : win.loadFile(path.join(app.getAppPath(), "dist", "index.html"), { query })
+    loading.catch(() => {})
+}
+
+/**
+ * The corner window's "Choose": a window of its own with just the choices, for the BEE2 check
+ * the question came from (src/components/ReviewDialog.jsx, ReviewWindow). A newer one replaces
+ * it; it closes itself once the choices are applied.
+ */
+function showReview(reviewId) {
+    if (reviewWindow && !reviewWindow.isDestroyed()) reviewWindow.destroy()
+    const win = new BrowserWindow({
+        title: "BEE2's packages",
+        width: 580,
+        height: 620,
+        minWidth: 420,
+        minHeight: 360,
+        show: false,
+        backgroundColor: "#262829",
+        webPreferences: webPreferences(),
+    })
+    reviewWindow = win
+    win.removeMenu()
+    win.webContents.setWindowOpenHandler(() => ({ action: "deny" }))
+    win.webContents.on("will-navigate", (event) => event.preventDefault())
+    // The page's own title would replace this one
+    win.on("page-title-updated", (event) => event.preventDefault())
+    win.on("closed", () => {
+        if (reviewWindow === win) reviewWindow = null
+    })
+    win.once("ready-to-show", () => {
+        win.show()
+        win.focus()
+    })
+    loadPage(win, { review: reviewId ?? "" })
+}
+
+/**
+ * Package details' "View contents": what a version contains in a window of its own
+ * (src/components/Contents.jsx, ContentsWindow). One per version: opening it again brings it up.
+ */
+function showContents(name, version, title) {
+    const key = `${name}@${version}`
+    const open = contentsWindows.get(key)
+    if (open && !open.isDestroyed()) {
+        if (open.isMinimized()) open.restore()
+        open.focus()
+        return
+    }
+    const win = new BrowserWindow({
+        title: `${title || name} ${version}`,
+        width: 760,
+        height: 660,
+        minWidth: 420,
+        minHeight: 360,
+        show: false,
+        backgroundColor: "#1d1e1f",
+        webPreferences: webPreferences(),
+    })
+    contentsWindows.set(key, win)
+    win.removeMenu()
+    win.webContents.setWindowOpenHandler(() => ({ action: "deny" }))
+    win.webContents.on("will-navigate", (event) => event.preventDefault())
+    win.on("page-title-updated", (event) => event.preventDefault())
+    win.on("closed", () => contentsWindows.delete(key))
+    win.once("ready-to-show", () => win.show())
+    loadPage(win, { contents: name, version, title: title ?? "" })
 }
 
 /**
@@ -219,19 +307,11 @@ function showToast(query, answers, timeoutMs) {
         skipTaskbar: true,
         show: false,
         backgroundColor: "#262829",
-        webPreferences: {
-            preload: path.join(here, "preload.cjs"),
-            contextIsolation: true,
-            nodeIntegration: false,
-            sandbox: true,
-        },
+        webPreferences: webPreferences(),
     })
     toast.webContents.setWindowOpenHandler(() => ({ action: "deny" }))
     toast.webContents.on("will-navigate", (event) => event.preventDefault())
-    const loading = isDev
-        ? toast.loadURL(`${DEV_URL}/?${new URLSearchParams(query)}`)
-        : toast.loadFile(path.join(app.getAppPath(), "dist", "index.html"), { query })
-    loading.catch(() => {})
+    loadPage(toast, query)
     toast.once("ready-to-show", () => toast.showInactive())
 
     const id = toast.webContents.id
@@ -320,12 +400,7 @@ function createWindow() {
         minHeight: 600,
         show: false,
         backgroundColor: "#1d1e1f",
-        webPreferences: {
-            preload: path.join(here, "preload.cjs"),
-            contextIsolation: true,
-            nodeIntegration: false,
-            sandbox: true,
-        },
+        webPreferences: webPreferences(),
     })
     mainWindow = win
     rendererReady = false
@@ -385,6 +460,14 @@ function registerIpc() {
         logger.fromWindow("Window", level, text)
     })
     // A question's answer (showToast)
+    // BeePM's own updates (Settings > About): its status, after "check" or "restart" if given
+    ipcMain.handle("app:update", (event, action) => {
+        if (event.sender !== mainWindow?.webContents) return { ok: true, status: null }
+        if (!appUpdater) return { ok: true, status: { phase: "off" } }
+        if (action === "check") appUpdater.check()
+        if (action === "restart" && appUpdater.status().phase === "ready") appUpdater.restart()
+        return { ok: true, status: appUpdater.status() }
+    })
     ipcMain.handle("toast:answer", (event, answer) => {
         const question = toastAnswers.get(event.sender.id)
         if (question?.answers.includes(answer)) question.finish(answer)
@@ -437,6 +520,7 @@ if (!app.requestSingleInstanceLock()) {
             log: logger,
             ask,
             showReview,
+            showContents,
             notify: (text) => balloon(text),
             trash: (file) => shell.trashItem(file),
             openProgram,
@@ -452,6 +536,7 @@ if (!app.requestSingleInstanceLock()) {
         const launchUrl = process.argv.find((arg) => arg.startsWith(`${PROTOCOL}://`))
         if (launchUrl) handleProtocolUrl(launchUrl)
         backend.startup()
+        startAppUpdates()
 
         app.on("activate", () => {
             if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -460,8 +545,7 @@ if (!app.requestSingleInstanceLock()) {
 
     // In the background BeePM stays in the tray; "Quit BeePM" there quits
     app.on("window-all-closed", () => {
-        if (background) hintTray().catch(() => {})
-        else if (process.platform !== "darwin") app.quit()
+        if (!background && process.platform !== "darwin") app.quit()
     })
 
     // Remove temporary files (prepared packages) before quitting, then close the log

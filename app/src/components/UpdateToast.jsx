@@ -6,8 +6,17 @@ import Brand from "./Brand.jsx"
  * What a corner question says, and its answers: [label, answer, style]. The first answer is
  * the main one; "quiet" ones go to the right. Closing the window is always "later".
  */
-function question({ kind, name, from, to, count, folder, switching }) {
+function question({ kind, name, from, to, count, folder, switching, version }) {
     switch (kind) {
+        case "app-update":
+            return {
+                title: `BeePM ${version} is ready`,
+                text: "Restart BeePM to finish updating.",
+                answers: [
+                    ["Restart", "restart"],
+                    ["Later", "later"],
+                ],
+            }
         case "use-bee2":
             return {
                 title: switching ? "Switch BeePM to this BEE2?" : "Use this BEE2 with BeePM?",

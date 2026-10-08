@@ -1,7 +1,16 @@
 import { useEffect, useState } from "react"
-import { Box, IconButton, InputAdornment, TextField, Tooltip, Typography } from "@mui/material"
+import {
+    Box,
+    IconButton,
+    InputAdornment,
+    MenuItem,
+    TextField,
+    Tooltip,
+    Typography,
+} from "@mui/material"
 import RefreshIcon from "@mui/icons-material/Refresh"
 import SearchIcon from "@mui/icons-material/Search"
+import { CONTENT_KINDS, contentLabel } from "@beepm/core/kinds"
 import ConfirmDialog from "./components/ConfirmDialog.jsx"
 import InstallDialog from "./components/InstallDialog.jsx"
 import LoginDialog from "./components/LoginDialog.jsx"
@@ -31,6 +40,7 @@ function Shell() {
     // Views stay mounted after their first visit, so they keep their state (and scroll position)
     const [visited, setVisited] = useState(() => new Set(["browse"]))
     const [search, setSearch] = useState({ browse: "", installed: "" })
+    const [kind, setKind] = useState("") // Browse: what to search in packages ("" for everything)
     const [reloadKey, setReloadKey] = useState(0)
     const [refreshing, setRefreshing] = useState(false)
 
@@ -68,7 +78,12 @@ function Shell() {
         switch (id) {
             case "browse":
                 return (
-                    <BrowseView query={search.browse} reloadKey={reloadKey} onNavigate={navigate} />
+                    <BrowseView
+                        query={search.browse}
+                        kind={kind}
+                        reloadKey={reloadKey}
+                        onNavigate={navigate}
+                    />
                 )
             case "installed":
                 return <InstalledView query={search.installed} onNavigate={navigate} />
@@ -102,11 +117,33 @@ function Shell() {
                         {TITLES[view]}
                     </Typography>
                     <Box sx={{ flex: 1 }} />
+                    {view === "browse" && (
+                        <TextField
+                            select
+                            size="small"
+                            value={kind}
+                            onChange={(event) => setKind(event.target.value)}
+                            aria-label="What to search for"
+                            sx={{ width: 150 }}
+                            slotProps={{ select: { displayEmpty: true } }}
+                        >
+                            <MenuItem value="">Everything</MenuItem>
+                            {CONTENT_KINDS.map((k) => (
+                                <MenuItem key={k.kind} value={k.kind}>
+                                    {k.label}
+                                </MenuItem>
+                            ))}
+                        </TextField>
+                    )}
                     {SEARCHABLE.has(view) && (
                         <TextField
                             size="small"
                             placeholder={
-                                view === "browse" ? "Search the registry…" : "Filter installed…"
+                                view !== "browse"
+                                    ? "Filter installed…"
+                                    : kind
+                                      ? `Search ${contentLabel(kind).toLowerCase()}…`
+                                      : "Search the registry…"
                             }
                             value={search[view]}
                             onChange={(event) =>

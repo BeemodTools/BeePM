@@ -11,6 +11,7 @@ import {
     uninstall,
 } from "@beepm/core/client"
 import { isCompatible } from "@beepm/core/compat"
+import { CONTENT_KINDS, contentCount, contentOne, isContentKind } from "@beepm/core/kinds"
 import { adoptOldInstalls, CliError, getContext } from "../context.js"
 import {
     color,
@@ -34,6 +35,12 @@ async function readRequirements(file) {
         .map((line) => line.replace(/#.*/, "").trim())
         .filter(Boolean)
 }
+
+/** "7 items, 2 signs": what a package's latest version contains. */
+const describeCounts = (counts = {}) =>
+    CONTENT_KINDS.filter((k) => counts[k.kind])
+        .map((k) => contentCount(k.kind, counts[k.kind]))
+        .join(", ")
 
 function describeStep(step) {
     const change = step.from ? `${step.from} → ${step.to}` : step.to
@@ -80,18 +87,38 @@ async function runPlan(ctx, plan, { yes = false } = {}) {
 }
 
 export function register(program) {
+    const kinds = CONTENT_KINDS.map((k) => k.kind).join(", ")
     program
         .command("search [query]")
-        .description("Search the registry")
-        .action(async (query = "") => {
+        .description("Search the registry, also by what's in packages (items, music...)")
+        .option("-k, --kind <kind>", `only packages with this in them: ${kinds}`)
+        .action(async (query = "", options) => {
+            if (options.kind && !isContentKind(options.kind)) {
+                throw new CliError(`--kind is one of: ${kinds}`)
+            }
             const ctx = await getContext()
-            const { total, packages } = await ctx.api.search(query, { limit: 100 })
+            const { total, packages } = await ctx.api.search(query, {
+                limit: 100,
+                kind: options.kind,
+            })
             if (!packages.length)
-                return info(query ? `No packages match "${query}".` : "The registry is empty.")
-            table(
-                packages.map((p) => [p.name, p.latest ?? "-", p.displayName ?? "", p.downloads]),
-                ["NAME", "LATEST", "TITLE", "DOWNLOADS"],
-            )
+                return info(
+                    query || options.kind ? "No packages match that." : "The registry is empty.",
+                )
+            // What in each package matched, e.g. "Item: Laser Relay (+2)"
+            const found = ({ found: f }) =>
+                f
+                    ? f.matches.map((m) => `${contentOne(m.kind)}: ${m.name}`).join(", ") +
+                      (f.count > f.matches.length ? ` (+${f.count - f.matches.length})` : "")
+                    : ""
+            const rows = packages.map((p) => [
+                p.name,
+                p.latest ?? "-",
+                p.displayName ?? "",
+                p.downloads,
+                found(p),
+            ])
+            table(rows, ["NAME", "LATEST", "TITLE", "DOWNLOADS", "FOUND"])
             if (total > packages.length)
                 info(color.dim(`...and ${total - packages.length} more. Narrow the search.`))
         })
@@ -99,7 +126,8 @@ export function register(program) {
     program
         .command("info <package>")
         .description("Show a package's details and versions")
-        .action(async (spec) => {
+        .option("-c, --contents", "list everything in the latest version (items, music...)")
+        .action(async (spec, options) => {
             const ctx = await getContext()
             const { name } = await resolveSpec(ctx.api, spec)
             const doc = await ctx.api.packument(name)
@@ -110,6 +138,17 @@ export function register(program) {
             info(
                 `BEE2 ID: ${doc.beeId}   Owners: ${doc.owners.map((o) => `@${o}`).join(", ")}   Downloads: ${doc.downloads}`,
             )
+            const counts = describeCounts(doc.contents)
+            if (counts) info(`Contains: ${counts}`)
+            if (options.contents && doc.latest) {
+                const { read, error, contents } = await ctx.api.contents(name, doc.latest)
+                if (!read) info(color.dim("The registry hasn't looked inside it yet."))
+                else if (error) info(color.yellow(`The registry couldn't look inside it: ${error}`))
+                for (const kind of CONTENT_KINDS) {
+                    const names = contents.filter((o) => o.kind === kind.kind).map((o) => o.name)
+                    if (names.length) info(`  ${color.bold(kind.label)}: ${names.join(", ")}`)
+                }
+            }
             info("")
             const rows = Object.values(doc.versions)
                 .reverse()

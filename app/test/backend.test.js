@@ -76,7 +76,16 @@ after(async () => {
  * fetch: a stand-in for the network (e.g. to play GitHub); log: a Logger; bee2Process: a
  * stand-in BEE2 process; home: another BEEPM_HOME.
  */
-async function startBackend({ fetch, log, onSettingsChanged, bee2Process, home } = {}) {
+async function startBackend({
+    fetch,
+    log,
+    onSettingsChanged,
+    bee2Process,
+    home,
+    ask,
+    showReview,
+    showContents,
+} = {}) {
     const opened = []
     const events = []
     const backend = await createBackend({
@@ -85,6 +94,9 @@ async function startBackend({ fetch, log, onSettingsChanged, bee2Process, home }
         log,
         onSettingsChanged,
         bee2Process,
+        ask,
+        showReview,
+        showContents,
         appVersion: "1.0.0-test",
         openExternal: async (url) => opened.push(url),
         send: (channel, payload) => events.push({ channel, payload }),
@@ -480,9 +492,12 @@ test(
 
 test("the BEE2 check: duplicates and packages that are on BeePM, fixed once BEE2 is closed", async () => {
     const bee2 = { running: false }
+    const reviewed = [] // the checks a window to choose in was opened for
     const { backend, nextEvent } = await startBackend({
         home: path.join(dir, "check-home"),
         bee2Process: { isRunning: async () => bee2.running, findProgram: async () => null },
+        ask: async (question) => (question.kind === "duplicates" ? "choose" : "later"),
+        showReview: (reviewId) => reviewed.push(reviewId),
     })
     const started = await backend.invoke("auth:login")
     await finishInBrowser(started.url, "Sorter", "sorter")
@@ -516,6 +531,17 @@ test("the BEE2 check: duplicates and packages that are on BeePM, fixed once BEE2
     const status = await backend.invoke("bee2:status")
     assert.equal(status.packagesDir, path.join(packages, "beepm"))
 
+    // The corner window's "Choose" shows the check its question came from, not a new one
+    await backend.watcher.offer()
+    assert.equal(reviewed.length, 1)
+    const third = path.join(packages, "twice_third.bee_pack")
+    await writeFile(third, await zip("TWICE"))
+    const shown = await backend.invoke("bee2:check", { reviewId: reviewed[0] })
+    assert.equal(shown.reviewId, reviewed[0])
+    assert.equal(shown.duplicates.packages[0].copies.length, 2)
+    assert.equal((await backend.invoke("bee2:check")).duplicates.packages[0].copies.length, 3)
+    await rm(third)
+
     const check = await backend.invoke("bee2:check")
     assert.equal(check.ok, true, check.error)
     assert.deepEqual(
@@ -544,6 +570,23 @@ test("the BEE2 check: duplicates and packages that are on BeePM, fixed once BEE2
 
     const after = await backend.invoke("bee2:check")
     assert.deepEqual([after.duplicates.packages, after.onBeepm], [[], []])
+})
+
+test('"View contents" opens a window for a real package version only', async () => {
+    const shown = []
+    const { backend } = await startBackend({
+        showContents: (...args) => shown.push(args),
+    })
+    assert.equal((await backend.invoke("app:open-contents", "@A/Items", "1.2.0", "Items")).ok, true)
+    assert.deepEqual(shown, [["@a/items", "1.2.0", "Items"]])
+    for (const [name, version] of [
+        ["not a name", "1.0.0"],
+        ["@a/items", "../../etc"],
+        ["@a/items", null],
+    ]) {
+        assert.equal((await backend.invoke("app:open-contents", name, version)).ok, false)
+    }
+    assert.equal(shown.length, 1)
 })
 
 test("settings: running in the background, and updates not to ask about again", async () => {

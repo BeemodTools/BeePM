@@ -2,7 +2,7 @@
  * BeePM in the background: when BEE2 opens, it looks at BEE2's packages and asks about what it
  * finds, in a small window in the corner:
  *   duplicates  packages BEE2 refuses to load together: "Delete duplicates" keeps the newest of
- *               each, "Choose" opens BeePM's window to pick
+ *               each, "Choose" opens a window to pick in (what was found, not looked at again)
  *   onBeepm     packages the user added themselves that are on BeePM: "Use BeePM's" (BeePM's
  *               version gets updates) or "Keep mine" (not asked again); "Choose" with several
  *   updates     each of BeePM's packages with an update: Update, Not now, or Don't ask again
@@ -18,11 +18,11 @@
  *   findBee2() -> BeePM's BEE2's program file or null, askBee2ToClose() -> whether it was
  *   asked, openBee2(file),
  *   review() -> { duplicates: { count, remove: [files] } | null, onBeepm: [{ id, name, package }],
- *                 updates: [{ name, from, to }] },
+ *                 updates: [{ name, from, to }], reviewId? },
  *   ask(question) -> the answer; question.kind: "duplicates" ("delete" | "choose" | "later"),
  *     "adopt" ("use" | "keep" | "choose" | "later"), "update" ("update" | "later" | "never"),
  *     "close" ("now" | "later"), "use-bee2" ("use" | "later" | "never"),
- *   choose() (BeePM's window, to choose), keepOwn(ids), ignore(name),
+ *   choose(found) (a window to choose in, for what review() found), keepOwn(ids), ignore(name),
  *   apply({ remove, adopt, update }), notify(text), log,
  *   whenClosed() (optional: BEE2 was just closed), sleep(ms) (optional)
  */
@@ -94,7 +94,7 @@ export function createUpdateWatcher(
             else if (answer === "keep") await deps.keepOwn(found.onBeepm.map((p) => p.id))
             else if (answer === "choose") choosing = true
         }
-        if (choosing) deps.choose()
+        if (choosing) deps.choose(found)
         for (const update of found.updates) {
             const answer = await deps.ask({ kind: "update", ...update })
             deps.log.info(`Update ${update.name} ${update.from} -> ${update.to}: ${answer}`)
@@ -186,24 +186,36 @@ export function createUpdateWatcher(
         }
     }
 
+    // One check at a time: answering the questions, or installing, can take a while. A poke
+    // during one checks again after it, unless that one saw BEE2 open.
+    let checking = false
+    let poked = false
+    async function run() {
+        if (checking) return
+        checking = true
+        try {
+            do {
+                poked = false
+                await check().catch((err) =>
+                    deps.log.warn(`Checking BEE2's packages failed: ${err.message}`),
+                )
+            } while (poked && !wasRunning)
+        } finally {
+            checking = false
+        }
+    }
+
     return {
         offer,
         check,
+        /** BEE2 may have just opened (e.g. it wrote its log): checks now, not at the next look. */
+        poke() {
+            if (!timer || wasRunning) return
+            poked = true
+            run()
+        },
         start() {
             if (timer) return
-            // One check at a time: answering the questions, or installing, can take a while
-            let checking = false
-            const run = async () => {
-                if (checking) return
-                checking = true
-                try {
-                    await check()
-                } catch (err) {
-                    deps.log.warn(`Checking BEE2's packages failed: ${err.message}`)
-                } finally {
-                    checking = false
-                }
-            }
             timer = setInterval(run, everyMs)
             timer.unref?.()
             run()

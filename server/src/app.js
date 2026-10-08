@@ -34,14 +34,19 @@ export async function buildApp(deps) {
     app.decorate("deps", { fetch: globalThis.fetch, ...deps, log: app.log })
     app.decorateRequest("user", null)
 
-    const discord = createDiscordLog({
-        webhooks: {
-            log: deps.config.discordLogWebhook,
-            releases: deps.config.discordReleasesWebhook,
-        },
-        fetch: app.deps.fetch,
-        logger: app.log,
-    })
+    const webhooks = {
+        log: deps.config.discordLogWebhook,
+        releases: deps.config.discordReleasesWebhook,
+    }
+    const discord = createDiscordLog({ webhooks, fetch: app.deps.fetch, logger: app.log })
+    // Which channels are on (never the URLs), so a missing or mistyped variable shows in the log
+    const state = (channel, variable) =>
+        discord.enabled(channel)
+            ? "on"
+            : `off (${variable} ${webhooks[channel] ? "isn't a webhook URL" : "isn't set"})`
+    app.log.info(
+        `Discord: activity log ${state("log", "DISCORD_LOG_WEBHOOK")}, new versions ${state("releases", "DISCORD_RELEASES_WEBHOOK")}`,
+    )
     if (discord.enabled("log") || discord.enabled("releases")) {
         const activity = createActivityLog({ db: deps.db, discord, logger: app.log })
         onAudit(deps.db, (entry) => activity.audit(entry))

@@ -10,14 +10,18 @@ import {
 } from "@mui/material"
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore"
 import ExploreIcon from "@mui/icons-material/Explore"
+import { contentLabel } from "@beepm/core/kinds"
 import { api } from "../api.js"
 import EmptyState from "../components/EmptyState.jsx"
 import ErrorAlert from "../components/ErrorAlert.jsx"
 import PackageCard from "../components/PackageCard.jsx"
 import { useApp } from "../state/context.js"
 
-/** Registry search (on the server, as you type). */
-export default function BrowseView({ query, reloadKey, onNavigate }) {
+/**
+ * Registry search (on the server, as you type), also by what's in packages; kind: only packages
+ * with that kind of thing in them (items, music...), named like the search.
+ */
+export default function BrowseView({ query, kind = "", reloadKey, onNavigate }) {
     const { registryVersion, bee2 } = useApp()
     const [results, setResults] = useState({ loading: true, packages: [], total: 0, error: null })
     const [retry, setRetry] = useState(0)
@@ -29,7 +33,7 @@ export default function BrowseView({ query, reloadKey, onNavigate }) {
         setResults((current) => ({ ...current, loading: true }))
         const timer = setTimeout(
             async () => {
-                const res = await api.registry.search(q)
+                const res = await api.registry.search(q, { kind: kind || undefined })
                 if (cancelled) return
                 setResults(
                     res.ok
@@ -49,7 +53,7 @@ export default function BrowseView({ query, reloadKey, onNavigate }) {
             cancelled = true
             clearTimeout(timer)
         }
-    }, [q, reloadKey, registryVersion, retry])
+    }, [q, kind, reloadKey, registryVersion, retry])
 
     const { loading, packages, error } = results
     // Removed packages (only admins get them) go in their own section at the bottom, closed
@@ -100,16 +104,18 @@ export default function BrowseView({ query, reloadKey, onNavigate }) {
                     icon={ExploreIcon}
                     title="No packages found"
                     text={
-                        q
-                            ? `Nothing matches "${q}". Try another search.`
-                            : "The registry has no packages yet."
+                        kind
+                            ? `No packages have ${contentLabel(kind).toLowerCase()}${q ? ` matching "${q}"` : ""}.`
+                            : q
+                              ? `Nothing matches "${q}". Try another search.`
+                              : "The registry has no packages yet."
                     }
                 />
             ) : (
                 <>
                     <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 0.5 }}>
                         <Typography variant="subtitle2" sx={{ color: "#888" }}>
-                            {q
+                            {q || kind
                                 ? `${total} result${total === 1 ? "" : "s"}`
                                 : `${total} package${total === 1 ? "" : "s"}`}
                         </Typography>

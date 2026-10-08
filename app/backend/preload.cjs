@@ -8,7 +8,7 @@ const { contextBridge, ipcRenderer } = require("electron")
 const EVENTS = [
     "app:notice",
     "app:protocol",
-    "app:review",
+    "app:update-status",
     "auth:changed",
     "auth:login-result",
     "packages:changed",
@@ -26,10 +26,12 @@ contextBridge.exposeInMainWorld("beepm", {
         ready: call("app:ready"),
         info: call("app:info"),
         openExternal: call("app:open-external"),
+        openContents: call("app:open-contents"),
         openPackagesFolder: call("app:open-packages-folder"),
         openLogsFolder: call("app:open-logs-folder"),
         settings: call("app:settings"),
         updateSettings: call("app:update-settings"),
+        update: call("app:update"),
     },
     auth: {
         status: call("auth:status"),
@@ -43,6 +45,7 @@ contextBridge.exposeInMainWorld("beepm", {
     registry: {
         search: call("registry:search"),
         package: call("registry:package"),
+        contents: call("registry:contents"),
     },
     packages: {
         installed: call("packages:installed"),

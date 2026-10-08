@@ -156,6 +156,31 @@ user's linked GitHub account and its public organizations, `GET
 fresh; the client downloads it from `url` itself). Answers are cached, and each account can
 make 120 lookups every 10 minutes.
 
+### What's in a package
+
+So people can see what a package has and search for a specific item or song, the registry reads
+each version's file when it's published (core's `contents.js`) and keeps what BEE2 lets you
+pick (`kinds.js`): items (`Item`), styles, music, signage, voice lines (`QuotePack`), skyboxes,
+elevator videos, style options (`StyleVar`) and player models, each with its ID and name, in
+`version_contents` (migration 005). Items have no name in info.txt: it comes from the first
+style's `items/<folder>/editoritems.txt`, one name per subtype (the others are kept as aliases,
+for search); BEE2's own items use Portal 2 translation keys there, so their palette tooltip is
+used ("EXIT DOOR" -> "Exit Door"), and anything without a name gets one from its ID. Each also
+keeps its description and authors (info.txt, or an item's properties.txt) and its icon, found
+where BEE2 looks: `resources/BEE2/<Icon>` (.png added if there's no extension; items' under
+`resources/BEE2/items/`, from properties.txt's `Icon`, else the palette image, else the editor's
+own VTF in `materials/models/props_map_editor/`; signage's from its first style). Icons are
+stored as PNG thumbnails at most 128 px wide or tall (`images.js`: PNG, JPEG and VTF, the VTF
+decoder ported from BeePEE; images claiming more than 4096 px aren't decoded). Versions
+published before this are read in the background after startup, newest first; one whose file
+can't be read is noted (`contents_error`), one that couldn't be downloaded is tried again after
+the next restart.
+
+Search (`GET /v1/packages?q=`) also looks at the newest usable version's contents: names, other
+names and IDs. `kind=<kind>` keeps only packages with that kind in them, named like `q` (or
+named like it themselves) if `q` is given. Results found by their contents say what matched in
+`found: {matches: [{kind, name}] (up to 5), count}`.
+
 ### Discord logs
 
 With `DISCORD_LOG_WEBHOOK` set, the registry posts its activity to that Discord channel:
@@ -166,7 +191,9 @@ most every 10 minutes). The old-registry import is one message, not one per vers
 channel. Messages follow BEE Bot's log style (its `logui.py`): a Components V2 container
 with BEE Bot's colors, a `## Title`, one bold-name block per field, the actor's avatar, a
 `-# ... on | <time>` footer and link buttons, falling back to a classic embed. They're sent
-in the background and never ping anyone; Discord being down never affects a request.
+in the background and never ping anyone; Discord being down never affects a request. At
+startup the registry logs which of the two channels are on, and why one is off (the variable
+isn't set, or isn't a webhook URL), never the URLs.
 
 ## API (JSON; errors are `{"error": {"code", "message"}}`)
 
@@ -176,14 +203,18 @@ Public:
 |---|---|
 | `GET /health` | `{ok: true}` |
 | `GET /v1` | `{name, version, providers: ["discord", "github"], limits}` |
-| `GET /v1/packages?q=&limit=&offset=` | `{total, packages: [summary]}` (admins also get removed ones, with `removed`) |
+| `GET /v1/packages?q=&kind=&limit=&offset=` | `{total, packages: [summary]}`, with `found` for what in them matched (see What's in a package; admins also get removed ones, with `removed`) |
 | `GET /v1/packages/:scope/:name` | packument (below) |
+| `GET /v1/packages/:scope/:name/versions/:version/contents` | `{version, read, error, contents: [{kind, id, name, aliases, description, authors, icon}]}` in info.txt's order (`read` is false until the registry has read it; `icon` is a URL or null) |
+| `GET /v1/packages/:scope/:name/versions/:version/icons/:position` | One thing's icon (a PNG thumbnail), cached for good |
 | `GET /v1/packages/:scope/:name/versions/:version/download` | 302 to a presigned URL |
 | `GET /v1/lookup?name=<name>` or `?beeId=<ID>` | `{packages: ["@scope/name", ...]}` |
+| `POST /v1/lookup {beeIds: [ID]}` (up to 1000) | `{packages: {<ID>: ["@scope/name", ...]}}`, only IDs on BeePM |
 | `GET /v1/users/:handle` | `{handle, displayName, avatarUrl, createdAt, packages: [summary]}` |
 
 Summary: `{name, scope, displayName, description, beeId, latest, compatibleWith,
-deprecated, updatedAt, downloads}`.
+deprecated, updatedAt, downloads, contents}` (`contents`: how many of each kind the latest
+version has, e.g. `{"item": 12, "music": 2}`; empty until it's been read).
 
 Packument:
 ```json
@@ -270,13 +301,15 @@ banReason, handle}`, `GET /v1/admin/audit`, `POST /v1/admin/import-legacy`.
   and modified time in `cache/packages.json`, so looking again only reads what changed.
 - **The BEE2 check** (`check.js`, `duplicates.js`): what BEE2 refuses to load together, the
   same package ID twice or an item ID in two packages, and the user's own packages (outside
-  `packages/beepm`) that are on BeePM (`/v1/lookup?beeId=`, 6 at a time), whose BeePM version
-  gets updates. Fixing duplicates keeps the newest copy of each (by the file's time) unless the
+  `packages/beepm`) that are on BeePM (`POST /v1/lookup`, all at once; one `?beeId=` at a time
+  from a registry without it), whose BeePM version gets updates. Fixing duplicates keeps the newest copy of each (by the file's time) unless the
   user picks another; for an item in two packages it's a whole package that goes.
 - Earlier 1.0 builds instead pointed BEE2's `[Directories] package` at `%APPDATA%/beepm/packages`
-  ("hooking") and downloaded BEE2's own packages there. `leaveHook` undoes that once BeePM knows
-  where BEE2 is and BEE2 is closed (it writes its config back when it exits): the old setting
-  is put back, BeePM's packages move into `packages/beepm/`, and the rest that was in the old
+  ("hooking") and downloaded BEE2's own packages there. `leaveHook` undoes that: as soon as no
+  BEE2 is running (it writes its config back when it exits), the old setting is put back (BEE2's
+  default if it isn't known), even before BeePM knows where BEE2 is, and also when BEE2's
+  config.cfg is the only thing left of the hook. Once BeePM knows where BEE2 is, BeePM's
+  packages move into `packages/beepm/`, and the rest that was in the old
   folder goes into BEE2's packages folder if BEE2 doesn't have that package yet (copies of what
   it has go to `replaced/`, BEE2's own downloaded ones are deleted), so BEE2 loads the same
   packages as before. The CLI and the desktop app do it as soon as they can; the app finds
@@ -285,9 +318,11 @@ banReason, handle}`, `GET /v1/admin/audit`, `POST /v1/admin/import-legacy`.
   adopted by matching BEE2 IDs through `/v1/lookup?beeId=` once BeePM knows where BEE2 is.
 - **In the background** (the desktop app; on by default once installed): BeePM starts with
   Windows (`--background`: only the tray), stays in the tray when its window closes, and when
-  BEE2 opens it runs the BEE2 check and looks for updates, asking in a small window in the
-  corner: Delete duplicates (keeps the newest; to the Recycle Bin) or Choose (BeePM's window,
-  per duplicate); Use BeePM's version or Keep mine (not asked again; kept in
+  BEE2 opens (seen within 5 seconds, or right away when BEE2 writes its log in `<BEE2>/logs`)
+  it runs the BEE2 check and looks for updates at once, asking in a small window in the
+  corner: Delete duplicates (keeps the newest; to the Recycle Bin) or Choose (a small window
+  of its own with just the choices, per duplicate, for what was just found: nothing is looked
+  at again); Use BeePM's version or Keep mine (not asked again; kept in
   `config/app-settings.json`), with Choose when there are several; and for each update,
   Update, Not now, or Don't ask again. BEE2 has the package files open, so the changes ask
   first: Close BEE2 (closed like its close button does, so it saves; opened again after) or
@@ -295,3 +330,7 @@ banReason, handle}`, `GET /v1/admin/audit`, `POST /v1/admin/import-legacy`.
   close, the changes wait for it. A BEE2 launched from another folder (or before BeePM knows
   one) is asked about first: Use this BEE2 switches BeePM to it; Not now or Don't ask again
   (kept in `config/app-settings.json`) leave it alone: it isn't checked, and never closed.
+- **BeePM's own updates** (the installed desktop app): electron-updater looks at the GitHub
+  releases of BeemodTools/BeePM after startup and every 6 hours, downloads a newer version in
+  the background and asks in the corner whether to restart now; otherwise the update installs
+  when BeePM quits (see app/README.md, Releasing).

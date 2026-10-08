@@ -12,6 +12,7 @@ import semver from "semver"
 import { audit } from "../lib/audit.js"
 import { ApiError, badRequest, conflict, forbidden } from "../lib/errors.js"
 import { versionKey } from "../storage/index.js"
+import { readVersionContents } from "./contents.js"
 import { latestVersion } from "./packages.js"
 import { findUserByHandle } from "./users.js"
 
@@ -270,10 +271,11 @@ export async function publishFile(deps, options) {
                 "SELECT version, yanked_at, unpublished_at FROM versions WHERE package_id = $1",
                 [pkg.id],
             )
-            await tx.query(
+            const { rows: added } = await tx.query(
                 `INSERT INTO versions (package_id, version, compatible_with, dependencies, manifest, sha256, size,
                                        storage_key, source, published_by, published_at)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, coalesce($11, now()))`,
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, coalesce($11, now()))
+                 RETURNING id`,
                 [
                     pkg.id,
                     version,
@@ -299,8 +301,9 @@ export async function publishFile(deps, options) {
             } else {
                 await tx.query("UPDATE packages SET updated_at = now() WHERE id = $1", [pkg.id])
             }
-            return { name: fullName, version, created, beeId }
+            return { name: fullName, version, created, beeId, versionId: added[0].id }
         })
+        const { versionId, ...published } = result
 
         await audit(db, user.id, "version.publish", `${fullName}@${version}`, {
             source,
@@ -311,7 +314,11 @@ export async function publishFile(deps, options) {
             // The old-registry import: not announced version by version
             ...(options.allowLegacy ? { imported: true } : {}),
         })
-        return { ...result, strippedFiles, sha256, size }
+        // What it contains, while the file is here (if this fails, startContentsReader reads it)
+        await readVersionContents(db, versionId, filePath).catch((err) =>
+            deps.log?.warn(`Couldn't read what ${fullName}@${version} contains: ${err.message}`),
+        )
+        return { ...published, strippedFiles, sha256, size }
     } catch (err) {
         if (uploaded) await storage.remove(key).catch(() => {})
         if (err instanceof ApiError) throw err

@@ -6,7 +6,8 @@ import { bee2PackagesDir } from "./paths.js"
 import { mapLimit, scanPackages } from "./scan.js"
 import { loadInstalled, saveInstalled } from "./state.js"
 
-const LOOKUPS_AT_ONCE = 6
+const LOOKUP_BATCH = 500 // BEE2 IDs per request (the registry takes up to 1000)
+const LOOKUPS_AT_ONCE = 6 // one ID per request, from a registry without batches
 const key = (p) => (process.platform === "win32" ? path.resolve(p).toLowerCase() : path.resolve(p))
 const isInside = (file, folder) => key(file).startsWith(key(folder) + path.sep)
 
@@ -57,25 +58,50 @@ export async function checkBee2Packages(ctx, { keepOwn = [] } = {}) {
     }
     let offline = false
     const onBeepm = []
-    await mapLimit([...own.values()], LOOKUPS_AT_ONCE, async (pkg) => {
-        if (offline) return
-        try {
-            const { packages } = await api.lookup({ beeId: pkg.id })
-            const parsed = packages.length === 1 ? parseName(packages[0]) : null
-            if (parsed) {
-                onBeepm.push({
-                    id: pkg.id,
-                    name: pkg.name ?? pkg.id,
-                    file: pkg.file,
-                    package: formatName(parsed.scope, parsed.name),
-                })
-            }
-        } catch (err) {
-            if (err.status === 0) offline = true
-        }
+    const names = await lookupBeeIds(api, [...own.keys()]).catch((err) => {
+        if (err.status === 0) offline = true
+        return new Map()
     })
+    for (const pkg of own.values()) {
+        const found = names.get(pkg.id) ?? []
+        const parsed = found.length === 1 ? parseName(found[0]) : null
+        if (parsed) {
+            onBeepm.push({
+                id: pkg.id,
+                name: pkg.name ?? pkg.id,
+                file: pkg.file,
+                package: formatName(parsed.scope, parsed.name),
+            })
+        }
+    }
     onBeepm.sort((a, b) => a.name.localeCompare(b.name))
     return { duplicates, onBeepm, offline }
+}
+
+/**
+ * The packages on BeePM for these BEE2 IDs: Map ID -> [names], only IDs that are on it. Asks for
+ * them all at once; a registry from before that existed is asked one ID at a time.
+ */
+async function lookupBeeIds(api, ids) {
+    const found = new Map()
+    try {
+        for (let i = 0; i < ids.length; i += LOOKUP_BATCH) {
+            const { packages } = await api.lookupBeeIds(ids.slice(i, i + LOOKUP_BATCH))
+            for (const [id, names] of Object.entries(packages ?? {})) found.set(id, names)
+        }
+        return found
+    } catch (err) {
+        if (err.status !== 404) throw err
+    }
+    await mapLimit(ids, LOOKUPS_AT_ONCE, async (id) => {
+        // It refuses IDs it wouldn't accept for publishing: those aren't on BeePM
+        const { packages } = await api.lookup({ beeId: id }).catch((err) => {
+            if (err.status === 0) throw err
+            return { packages: [] }
+        })
+        if (packages.length) found.set(id, packages)
+    })
+    return found
 }
 
 /**

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
 import { after, before, test } from "node:test"
+import { loadConfig } from "../src/config.js"
 import { buildContainer, buildEmbed, COLORS, createDiscordLog } from "../src/services/discord.js"
 import { api, login, makePack, publish, setup } from "./helpers.js"
 
@@ -16,6 +17,21 @@ function fakeDiscord(reply = () => new Response(null, { status: 204 })) {
     }
     return { calls, fetch }
 }
+
+test("webhook URLs pasted with quotes or spaces around them still work", () => {
+    const config = loadConfig({
+        DISCORD_LOG_WEBHOOK: `  "${LOG}"\n`,
+        DISCORD_RELEASES_WEBHOOK: ` '${RELEASES}' `,
+    })
+    assert.equal(config.discordLogWebhook, LOG)
+    assert.equal(config.discordReleasesWebhook, RELEASES)
+    assert.equal(loadConfig({ DISCORD_LOG_WEBHOOK: "  " }).discordLogWebhook, null)
+    const discord = createDiscordLog({
+        webhooks: { log: config.discordLogWebhook, releases: config.discordReleasesWebhook },
+    })
+    assert.equal(discord.enabled("log"), true)
+    assert.equal(discord.enabled("releases"), true)
+})
 
 test("logs look like BEE Bot's: header, fields, footer, buttons", () => {
     const at = new Date(1_700_000_000_000)

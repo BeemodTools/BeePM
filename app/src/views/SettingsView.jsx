@@ -29,7 +29,7 @@ import GitHubIcon from "@mui/icons-material/GitHub"
 import LinkIcon from "@mui/icons-material/Link"
 import LoginIcon from "@mui/icons-material/Login"
 import LogoutIcon from "@mui/icons-material/Logout"
-import { api } from "../api.js"
+import { api, onEvent } from "../api.js"
 import Brand from "../components/Brand.jsx"
 import DiscordIcon from "../components/DiscordIcon.jsx"
 import { formatDate, providerLabel } from "../lib/format.js"
@@ -541,7 +541,7 @@ function Bee2Section() {
             )}
             {bee2?.moving === "bee2" && (
                 <Alert severity="info" sx={{ mt: 1.5 }}>
-                    Close BEE2 so BeePM can move its packages into BEE2's packages folder.
+                    Close BEE2 so BeePM can set its packages folder back.
                 </Alert>
             )}
             <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap", mt: 2 }}>
@@ -562,13 +562,35 @@ function Bee2Section() {
     )
 }
 
+/** BeePM's version and its own updates (backend/appUpdater.js), and the logs folder. */
 function AboutSection() {
     const { appInfo, notify } = useApp()
+    const [update, setUpdate] = useState(null)
+
+    useEffect(() => {
+        api.app.update().then((res) => res.ok && setUpdate(res.status))
+        return onEvent("app:update-status", setUpdate)
+    }, [])
+
+    async function updateNow(action) {
+        const res = await api.app.update(action)
+        if (res.ok) setUpdate(res.status)
+        else notify(res.error, "error")
+    }
 
     async function openLogs() {
         const res = await api.app.openLogsFolder()
         if (!res.ok) notify(res.error, "error")
     }
+
+    const phase = update?.phase
+    const updateText = {
+        checking: "Looking for updates…",
+        downloading: `Downloading ${update?.version}${update?.percent ? ` (${update.percent}%)` : ""}…`,
+        ready: `BeePM ${update?.version} is ready`,
+        current: "Up to date",
+        error: "Couldn't look for updates",
+    }[phase]
 
     return (
         <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
@@ -580,10 +602,41 @@ function AboutSection() {
                     A package manager for BEEmod (BEE2) packages: browse, install and publish
                     community packages for Portal 2's Puzzle Maker.
                 </Typography>
+                {updateText && (
+                    <Typography
+                        variant="body2"
+                        title={update?.error ?? ""}
+                        sx={{ color: phase === "ready" ? "#2eff7b" : "#888", mt: 0.5 }}
+                    >
+                        {updateText}
+                    </Typography>
+                )}
             </Box>
-            <Button startIcon={<FolderOpenIcon />} onClick={openLogs} sx={{ flexShrink: 0 }}>
-                Open logs folder
-            </Button>
+            <Box
+                sx={{
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "flex-end",
+                    gap: 0.5,
+                    flexShrink: 0,
+                }}
+            >
+                {phase === "ready" ? (
+                    <Button variant="contained" onClick={() => updateNow("restart")}>
+                        Restart to update
+                    </Button>
+                ) : phase && phase !== "off" ? (
+                    <Button
+                        onClick={() => updateNow("check")}
+                        disabled={phase === "checking" || phase === "downloading"}
+                    >
+                        Check for updates
+                    </Button>
+                ) : null}
+                <Button startIcon={<FolderOpenIcon />} onClick={openLogs}>
+                    Open logs folder
+                </Button>
+            </Box>
         </Box>
     )
 }

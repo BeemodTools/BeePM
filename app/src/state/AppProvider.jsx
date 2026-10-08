@@ -321,7 +321,6 @@ export default function AppProvider({ children }) {
                 refreshBee2() // e.g. BeePM switched to another BEE2
             }),
             onEvent("app:notice", (notice) => notify(notice.message, notice.severity ?? "info")),
-            onEvent("app:review", () => setReviewOpen(true)),
             onEvent("app:protocol", (action) => {
                 if (action?.action === "publish" && action.file) {
                     setPublishRequest({ file: action.file, id: newId() })

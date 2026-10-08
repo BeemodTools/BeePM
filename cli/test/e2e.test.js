@@ -175,10 +175,26 @@ test("login, publish, install, update, uninstall through the CLI", async () => {
             version: "1.0.0",
             dependencies: { "@maker/lib": "^1.0.0", "@beemod/BEE2_CLEAN_STYLE": "*" },
         },
+        extra: {
+            "info.txt": `"ID" "MAKER_APP"
+"Name" "App"
+"Item" { "ID" "MAKER_THING" "Version" { "Styles" { "BEE2_CLEAN" "thing" } } }
+"Music" { "ID" "MAKER_TUNE" "Name" "Maker Theme" }
+`,
+            "items/thing/editoritems.txt":
+                '"Item" { "Type" "MAKER_THING" "Editor" { "SubType" { "Name" "Thing Maker" } } }',
+        },
     })
     assert.equal((await beepm("publish", app1, "--yes")).code, 0)
     assert.match((await beepm("search", "maker")).out, /@maker\/app/)
-    assert.match((await beepm("info", "app")).out, /BEE2 ID: MAKER_APP/)
+    const info = await beepm("info", "app", "--contents")
+    assert.match(info.out, /BEE2 ID: MAKER_APP/)
+    assert.match(info.out, /Contains: 1 item, 1 song/)
+    assert.match(info.out, /Music: Maker Theme/)
+    // What's in packages: a kind, and what matched
+    assert.match((await beepm("search", "--kind", "music")).out, /@maker\/app.*Music: Maker Theme/)
+    assert.match((await beepm("search", "thing maker")).out, /Item: Thing Maker/)
+    assert.equal((await beepm("search", "--kind", "nope")).code, 1)
 
     // Installing needs to know where BEE2 is: packages go in its packages folder
     const unset = await beepm("install", "app")

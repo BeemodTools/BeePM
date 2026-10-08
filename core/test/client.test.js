@@ -14,6 +14,7 @@ import {
     findBee2Folder,
     getGithubJson,
     getIniValue,
+    hasHook,
     InstallError,
     leaveHook,
     listGithubReleases,
@@ -485,9 +486,14 @@ test("the BEE2 check finds duplicates and the user's packages that are on BeePM"
             "@e/e": { version: "1.0.0", explicit: true, file: "e@e.bee_pack", beeId: "E" },
         },
     })
-    ctx.api.lookup = async ({ beeId }) => ({ packages: beeId === "C" ? ["@c/c"] : [] })
+    const asked = []
+    ctx.api.lookupBeeIds = async (ids) => {
+        asked.push(ids)
+        return { packages: ids.includes("C") ? { C: ["@c/c"] } : {} }
+    }
 
     const check = await checkBee2Packages(ctx)
+    assert.deepEqual(asked, [["A", "B", "C"]]) // one request; E is BeePM's
     assert.deepEqual(
         check.duplicates.packages.map((g) => [g.id, g.copies.map((c) => c.path)]),
         [
@@ -502,10 +508,15 @@ test("the BEE2 check finds duplicates and the user's packages that are on BeePM"
         check.duplicates.items.map((g) => [g.items, g.packages.map((p) => p.id)]),
         [[["ITEM_X"], ["A", "B"]]],
     )
-    assert.deepEqual(check.onBeepm, [
-        { id: "C", name: "Test package", file: "c.bee_pack", package: "@c/c" },
-    ])
+    const onBeepm = [{ id: "C", name: "Test package", file: "c.bee_pack", package: "@c/c" }]
+    assert.deepEqual(check.onBeepm, onBeepm)
     assert.deepEqual((await checkBee2Packages(ctx, { keepOwn: ["C"] })).onBeepm, [])
+    // A registry from before lookups of many IDs at once: one at a time
+    ctx.api.lookupBeeIds = async () => {
+        throw Object.assign(new Error("Route POST:/v1/lookup not found"), { status: 404 })
+    }
+    ctx.api.lookup = async ({ beeId }) => ({ packages: beeId === "C" ? ["@c/c"] : [] })
+    assert.deepEqual((await checkBee2Packages(ctx)).onBeepm, onBeepm)
 
     // "Delete duplicates" keeps the newest; choices keep others
     assert.deepEqual(duplicateRemovals(check.duplicates).sort(), [oldA, b, managed].sort())
@@ -564,20 +575,27 @@ test("leaving the hook: BEE2's setting goes back, and its packages move into BEE
     })
 
     const ctx = await createClientContext({ env })
-    // "packages/" is in BEE2's folder: BeePM needs to see BEE2 run (or be told where it is)
-    assert.deepEqual(await leaveHook(ctx), { done: false, waitingFor: "folder" })
-    const program = path.join(bee2, "BEE2.exe")
-    assert.deepEqual(await leaveHook(ctx, { program, running: true }), {
+    // A running BEE2 would write the hooked setting back when it closes
+    assert.deepEqual(await leaveHook(ctx, { running: true }), { done: false, waitingFor: "bee2" })
+    assert.equal(
+        await readFile(bee2Paths(env).configFile, "utf8"),
+        `[Directories]\npackage = ${paths.hookedPackages}\n`,
+    )
+    // Once it's closed the setting goes back, even though BeePM doesn't know where BEE2 is yet
+    // ("packages/" is in BEE2's folder): it needs to see BEE2 run, or be told
+    assert.deepEqual(await leaveHook(ctx), {
         done: false,
-        waitingFor: "bee2", // it would write the hooked setting back when it closes
+        waitingFor: "folder",
+        restored: "packages/",
     })
-    assert.equal(ctx.paths.bee2Dir, bee2)
-    assert.deepEqual(await leaveHook(ctx), { done: true, moved: 1, restored: "packages/" })
-
     assert.equal(
         await readFile(bee2Paths(env).configFile, "utf8"),
         "[Directories]\npackage = packages/\n",
     )
+    const program = path.join(bee2, "BEE2.exe")
+    assert.deepEqual(await leaveHook(ctx, { program, running: true }), { done: true, moved: 1 })
+    assert.equal(ctx.paths.bee2Dir, bee2)
+
     await access(path.join(bee2, "packages", "beepm", "areng@items.bee_pack"))
     await access(path.join(bee2, "packages", "music.bee_pack")) // BEE2 didn't have it
     await access(path.join(bee2, "packages", "other.local.bee_pack"))
@@ -589,4 +607,28 @@ test("leaving the hook: BEE2's setting goes back, and its packages move into BEE
     })
     assert.deepEqual((await loadInstalled(paths)).local, {})
     assert.equal(await leaveHook(ctx), null) // nothing left to do
+})
+
+test("leaving the hook: BEE2 still loads BeePM's old folder, and nothing else is left", async () => {
+    const env = {
+        BEEPM_HOME: path.join(tmp.dir, "stale-hook", "home"),
+        BEE2_CONFIG_DIR: path.join(tmp.dir, "stale-hook", "bee2-config"),
+    }
+    const paths = beepmPaths(env)
+    await mkdir(bee2Paths(env).configDir, { recursive: true })
+    await writeFile(
+        bee2Paths(env).configFile,
+        `[Directories]\npackage = ${paths.hookedPackages}\n\n[General]\nkeep = 1\n`,
+    )
+    const ctx = await createClientContext({ env })
+    assert.equal(await hasHook(ctx), true)
+    assert.deepEqual(await leaveHook(ctx, { running: true }), { done: false, waitingFor: "bee2" })
+    // No need to know where BEE2 is: it goes back to its default folder
+    assert.deepEqual(await leaveHook(ctx), { done: true, moved: 0, restored: null })
+    assert.equal(
+        await readFile(bee2Paths(env).configFile, "utf8"),
+        "[Directories]\n\n[General]\nkeep = 1\n",
+    )
+    assert.equal(await hasHook(ctx), false)
+    assert.equal(await leaveHook(ctx), null)
 })

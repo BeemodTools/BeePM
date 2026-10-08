@@ -88,17 +88,22 @@ export function createApi({
         },
 
         info: () => request("GET", "/v1"),
-        search: (q = "", { limit = 50, offset = 0, scope } = {}) =>
+        // kind: only packages with that kind of thing in them (core's kinds.js)
+        search: (q = "", { limit = 50, offset = 0, scope, kind } = {}) =>
             request(
                 "GET",
-                `/v1/packages?q=${encodeURIComponent(q)}&limit=${limit}&offset=${offset}${scope ? `&scope=${encodeURIComponent(scope)}` : ""}`,
+                `/v1/packages?q=${encodeURIComponent(q)}&limit=${limit}&offset=${offset}${scope ? `&scope=${encodeURIComponent(scope)}` : ""}${kind ? `&kind=${encodeURIComponent(kind)}` : ""}`,
             ),
         packument: (name) => request("GET", pkg(name)),
+        // What a version contains: { version, read, error, contents: [{ kind, id, name, aliases }] }
+        contents: (name, version) => request("GET", `${ver(name, version)}/contents`),
         lookup: ({ name, beeId }) =>
             request(
                 "GET",
                 `/v1/lookup?${name ? `name=${encodeURIComponent(name)}` : `beeId=${encodeURIComponent(beeId)}`}`,
             ),
+        // Up to 1000 BEE2 IDs: { packages: { <BEE2 ID>: [names] } } for the ones on BeePM
+        lookupBeeIds: (beeIds) => request("POST", "/v1/lookup", { beeIds }),
         user: (handle) =>
             request("GET", `/v1/users/${encodeURIComponent(handle.replace(/^@/, ""))}`),
         downloadUrl: (name, version) => `${base}${ver(name, version)}/download`,

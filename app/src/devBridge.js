@@ -5,7 +5,8 @@
  *
  * URL options: ?loggedout starts logged out, ?admin makes the sample user an admin, ?nobee2:
  * BeePM doesn't know where BEE2 is, ?bee2open: BEE2 is running, ?clean: the BEE2 check finds
- * nothing (no duplicates, none of the user's packages on BeePM).
+ * nothing (no duplicates, none of the user's packages on BeePM), ?appupdate: a BeePM update is
+ * downloaded.
  */
 import { isCompatible } from "@beepm/core/compat"
 import semver from "semver"
@@ -267,7 +268,6 @@ const state = {
         ignoredUpdates: ["@mel/mel-sounds"],
         keepOwn: [],
         ignoredBee2: [],
-        trayHintShown: true,
     },
     // What the BEE2 check finds in BEE2's packages folder
     check: params.has("clean")
@@ -326,6 +326,77 @@ async function simulate(total, steps, delay, report) {
 
 // ---------- helpers ----------
 
+// What the sample packages' latest versions contain (the registry reads it from their files):
+// [kind, name, other names]
+const SAMPLE_CONTENTS = {
+    "@areng14/arengitems": [
+        [
+            "item",
+            "Laser Relay",
+            ["Angled Laser Relay"],
+            "Passes a laser on to the next relay. Use **Angled** for corners.\n\n* Works with any laser\n* Can be turned off",
+        ],
+        ["item", "Timed Button", [], "A floor button that stays pressed for a while."],
+        ["item", "Portal Spawner", [], "Spawns a second pair of portals."],
+        ["item", "Bullseye"],
+        ["item", "Ascension Cube", ["Ascension Sphere"], "A cube that floats up when dropped."],
+        ["item", "Better Dropper"],
+        ["item", "Bullet Detector", [], "Activates when a turret shoots it."],
+        ["signage", "Laser Hazard"],
+        ["signage", "Cube Drop"],
+    ],
+    "@portalfan/gel-pack": [
+        ["item", "Gel Dispenser"],
+        ["item", "Gel Pipe"],
+        ["item", "Gel Drip"],
+    ],
+    "@oldtimer/legacy-style": [
+        ["style", "Legacy (2014)"],
+        ["skybox", "Old Foggy Sky"],
+        ["elevator", "Old Aperture Logo"],
+        ["stylevar", "Rusty Panels"],
+    ],
+    "@carl/catapult-plus": [
+        ["item", "Adjustable Faith Plate"],
+        ["item", "Trajectory Preview Plate"],
+    ],
+    "@mel/mel-sounds": [
+        ["music", "Old Aperture Ambience"],
+        ["music", "Sunset Lift"],
+        ["music", "Lab Rat Waltz"],
+        ["voice", "Virgil"],
+    ],
+}
+// A stand-in icon: a colored square with the name's initials (no icon for style options)
+const sampleIcon = (kind, name, index) => {
+    if (kind === "stylevar") return null
+    const initials = name
+        .split(/\s+/)
+        .map((word) => word[0])
+        .join("")
+        .slice(0, 2)
+    const hue = (index * 47 + kind.length * 60) % 360
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="hsl(${hue},40%,32%)"/><text x="32" y="41" font-family="Arial" font-size="24" font-weight="700" fill="#fff" text-anchor="middle">${initials}</text></svg>`
+    return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`
+}
+const contentsOf = (name) =>
+    (SAMPLE_CONTENTS[name] ?? []).map(
+        ([kind, objectName, aliases = [], description = null], index) => ({
+            kind,
+            id: `${kind.toUpperCase()}_${index}`,
+            name: objectName,
+            aliases,
+            description,
+            authors: name.split("/")[0].slice(1),
+            icon: sampleIcon(kind, objectName, index),
+        }),
+    )
+const countsOf = (name) => {
+    const counts = {}
+    for (const { kind } of contentsOf(name)) counts[kind] = (counts[kind] ?? 0) + 1
+    return counts
+}
+
 const summary = (doc) => ({
     name: doc.name,
     scope: doc.scope,
@@ -337,6 +408,7 @@ const summary = (doc) => ({
     deprecated: doc.deprecated,
     updatedAt: doc.updatedAt,
     downloads: doc.downloads,
+    contents: countsOf(doc.name),
     removed: doc.removed,
 })
 
@@ -621,6 +693,12 @@ const bridge = {
             console.info(`[dev bridge] would open ${url}`)
             return ok()
         },
+        // A browser window stands in for the app's own one
+        openContents: async (name, version, title) => {
+            const query = new URLSearchParams({ contents: name, version, title: title ?? "" })
+            window.open(`/?${query}`, "_blank", "width=760,height=660")
+            return ok()
+        },
         openPackagesFolder: async () => {
             if (!state.bee2.dir) return fail("Choose where BEE2 is installed first.")
             console.info(`[dev bridge] would open ${PACKAGES_DIR}`)
@@ -630,6 +708,15 @@ const bridge = {
         updateSettings: async (changes = {}) => {
             Object.assign(state.appSettings, changes)
             return ok({ settings: clone(state.appSettings) })
+        },
+        // BeePM's own updates: ?appupdate pretends a new version is downloaded
+        update: async (action) => {
+            if (action === "restart") console.info("[dev bridge] would restart into BeePM 1.0.2")
+            return ok({
+                status: params.has("appupdate")
+                    ? { phase: "ready", version: "1.0.2" }
+                    : { phase: "current" },
+            })
         },
         openLogsFolder: async () => {
             console.info("[dev bridge] would open the logs folder")
@@ -725,20 +812,34 @@ const bridge = {
     },
 
     registry: {
-        search: async (query = "") => {
+        // Like the registry: package fields, or what's in the latest version (kind: only that)
+        search: async (query = "", { kind } = {}) => {
             await sleep(250)
             const q = String(query).trim().toLowerCase()
             const list = [...state.docs.values()]
                 .filter((doc) => (!doc.removed || isAdmin()) && doc.latest)
-                .filter(
-                    (doc) =>
+                .sort((a, b) => b.downloads - a.downloads)
+                .flatMap((doc) => {
+                    const contents = contentsOf(doc.name).filter((o) => !kind || o.kind === kind)
+                    const matching = contents.filter(
+                        (o) =>
+                            !q || [o.name, ...o.aliases].some((n) => n.toLowerCase().includes(q)),
+                    )
+                    const fields =
                         !q ||
                         [doc.name, doc.scope, doc.beeId, doc.displayName, doc.description].some(
                             (field) => field?.toLowerCase().includes(q),
-                        ),
-                )
-                .sort((a, b) => b.downloads - a.downloads)
-                .map(summary)
+                        )
+                    const keep = kind
+                        ? matching.length > 0 || (q && fields && contents.length > 0)
+                        : fields || matching.length > 0
+                    if (!keep) return []
+                    if ((!q && !kind) || !matching.length) return [summary(doc)]
+                    const matches = matching
+                        .slice(0, 5)
+                        .map(({ kind: k, name }) => ({ kind: k, name }))
+                    return [{ ...summary(doc), found: { matches, count: matching.length } }]
+                })
             return ok({ total: list.length, packages: list })
         },
         package: async (name) => {
@@ -747,7 +848,21 @@ const bridge = {
             if (!doc || (doc.removed && !isAdmin())) {
                 return fail(`Package ${name} doesn't exist.`, { code: "not_found", status: 404 })
             }
-            return ok({ package: clone(doc) })
+            return ok({ package: { ...clone(doc), contents: countsOf(name) } })
+        },
+        contents: async (name, version) => {
+            await sleep(200)
+            if (!state.docs.get(name)?.versions[version]) {
+                return fail(`${name}@${version} doesn't exist.`, { code: "not_found", status: 404 })
+            }
+            // Only the latest version was looked inside (the others: as if not read yet)
+            const latest = state.docs.get(name).latest === version
+            return ok({
+                version,
+                read: latest,
+                error: null,
+                contents: latest ? contentsOf(name) : [],
+            })
         },
     },
 

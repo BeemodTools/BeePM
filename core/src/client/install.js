@@ -8,7 +8,10 @@ import { scanBee2 } from "./check.js"
 import { downloadFile } from "./download.js"
 import { exists, freePath, moveFile, readJson } from "./files.js"
 import { packageFileName } from "./paths.js"
+import { mapLimit } from "./scan.js"
 import { loadConfig, loadInstalled, saveInstalled } from "./state.js"
+
+const FETCHES_AT_ONCE = 6
 
 /** An install/uninstall problem with a message meant for the user. */
 export class InstallError extends Error {
@@ -429,21 +432,14 @@ export async function outdated(ctx) {
     const { api, paths } = ctx
     const installed = await loadInstalled(paths)
     const bee2Version = (await loadConfig(paths)).bee2?.version ?? null
-    const rows = []
-    for (const [name, entry] of Object.entries(installed.packages)) {
+    const entries = Object.entries(installed.packages)
+    const rows = await mapLimit(entries, FETCHES_AT_ONCE, async ([name, entry]) => {
         let document
         try {
             document = await api.packument(name)
         } catch (err) {
             if (err.status === 404) {
-                rows.push({
-                    name,
-                    current: entry.version,
-                    wanted: null,
-                    latest: null,
-                    removed: true,
-                })
-                continue
+                return { name, current: entry.version, wanted: null, latest: null, removed: true }
             }
             throw err
         }
@@ -454,15 +450,15 @@ export async function outdated(ctx) {
             usable.map((v) => v.version),
             entry.range ?? "*",
         )
-        rows.push({
+        return {
             name,
             current: entry.version,
             wanted,
             latest: document.latest,
             deprecated: document.versions[entry.version]?.deprecated || document.deprecated || null,
             yanked: Boolean(document.versions[entry.version]?.yanked),
-        })
-    }
+        }
+    })
     return rows.filter(
         (r) =>
             r.removed ||

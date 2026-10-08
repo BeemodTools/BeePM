@@ -39,12 +39,31 @@ Environment variables (also used by the CLI):
 ## Packaging
 
 `npm run build` runs `vite build`, then electron-builder (settings in `electron-builder.js`),
-and leaves the installer in `release/` (`BeePM Setup <version>.exe`, not code-signed). The page
+and leaves the installer in `release/` (`BeePM-Setup-<version>.exe`, not code-signed). The page
 is bundled by Vite, so the packaged app only needs the main process' dependencies:
-`@beepm/core` and what it uses (`semver`, `yauzl`, `yazl`, `lzma1`). electron-builder copies
+`@beepm/core` and what it uses (`semver`, `yauzl`, `yazl`, `lzma1`), and `electron-updater`. electron-builder copies
 `@beepm/core` out of the workspace into the package. React and MUI get packed too, since
 they're `dependencies`; moving them to `devDependencies` would make the package smaller.
 
 Icons, made from BeePM.png: `build/icon.ico` is the app's, the installer's and the
 uninstaller's icon, and `build/installerSidebar.bmp` is the side image of the installer and
 uninstaller. electron-builder finds both by their names.
+
+## Releasing (BeePM updates itself)
+
+The installed app looks for new versions in the GitHub releases of BeemodTools/BeePM
+(`backend/appUpdater.js` with electron-updater; `publish` in `electron-builder.js`): soon after
+it starts and every 6 hours. It downloads a new version in the background, then asks in the
+corner whether to restart now; otherwise it installs when BeePM quits. To release:
+
+1. Raise `version` in `package.json` (e.g. 1.0.0 to 1.0.1): the updater only takes higher
+   versions.
+2. `npm run build`. Besides the installer, `release/` gets `latest.yml` (the version, the
+   installer's name, size and SHA-512) and the installer's `.blockmap` (so updates only download
+   what changed).
+3. Make a GitHub release on BeemodTools/BeePM tagged `v<version>` (not a draft or pre-release)
+   with those three files: `BeePM-Setup-<version>.exe`, its `.blockmap` and `latest.yml`. Or
+   let electron-builder do it: set `GH_TOKEN` (a token that can write the repo's releases) in
+   your own terminal and run `npx electron-builder --publish always` after `vite build`.
+
+`BEEPM_NO_UPDATE=1` turns the updater off in the installed app.
