@@ -218,6 +218,30 @@ function sampleCheck() {
         onBeepm: [
             { id: "MEL_SOUNDS", name: "Mel Sounds", file: "mel.zip", package: "@mel/mel-sounds" },
         ],
+        // What BEE2 can't load (see core's bee2zip.js): one can be fixed
+        damaged: [
+            {
+                path: `${BEE2_DIR}\\packages\\Dogs_WIP_package.bee_pack`,
+                file: "Dogs_WIP_package.bee_pack",
+                message: `Its info.txt is in the folder "Dog's WIP Package" inside it, where BEE2 doesn't look`,
+                managed: false,
+                fixable: true,
+            },
+            {
+                path: `${BEE2_DIR}\\packages\\Lugia-s-Signage-main.bee_pack`,
+                file: "Lugia-s-Signage-main.bee_pack",
+                message: "It has no info.txt, so it isn't a package",
+                managed: false,
+                fixable: false,
+            },
+            {
+                path: `${BEE2_DIR}\\packages\\cube_glass_V13.zip`,
+                file: "cube_glass_V13.zip",
+                message: "It isn't a zip, or it's cut short (a download that didn't finish?)",
+                managed: false,
+                fixable: false,
+            },
+        ],
     }
 }
 
@@ -272,7 +296,7 @@ const state = {
     },
     // What the BEE2 check finds in BEE2's packages folder
     check: params.has("clean")
-        ? { duplicates: { packages: [], items: [] }, onBeepm: [] }
+        ? { duplicates: { packages: [], items: [] }, onBeepm: [], damaged: [] }
         : sampleCheck(),
     plans: new Map(),
     prepared: new Map(),
@@ -789,8 +813,12 @@ const bridge = {
             if (!state.loggedIn) return fail("Log in first.", { code: "login_required" })
             if (displayName !== undefined) {
                 const name = String(displayName).trim()
-                if (!name || name.length > 50) {
-                    return fail("Your nickname needs 1 to 50 characters.", { status: 400 })
+                // Like the registry: plain ASCII only (see server/src/services/users.js)
+                if (!name || name.length > 50 || !/^[\x20-\x7E]+$/.test(name)) {
+                    return fail(
+                        "Your nickname must be 1 to 50 characters, with only English letters, numbers, spaces and keyboard symbols.",
+                        { status: 400 },
+                    )
                 }
                 state.user.displayName = name
             }
@@ -1042,10 +1070,27 @@ const bridge = {
             return ok({ reviewId: rid(), ...clone(state.check), onBeepm, offline: false })
         },
         // Deletes what wasn't kept, and installs BeePM's version of the packages switched
-        resolve: async ({ choices = {}, adopt = [], keep = [], closeBee2 = false } = {}) => {
+        resolve: async ({
+            choices = {},
+            adopt = [],
+            keep = [],
+            damaged: repair = {},
+            closeBee2 = false,
+        } = {}) => {
             await sleep(600)
-            const { duplicates, onBeepm } = state.check
+            const { duplicates, onBeepm, damaged = [] } = state.check
             const removed = []
+            // What BEE2 can't load: fixed (a package per folder inside it) or removed
+            const fixed = []
+            for (const pkg of damaged) {
+                if (repair[pkg.path] === "remove") removed.push(pkg.path)
+                else if (repair[pkg.path] === "fix" && pkg.fixable) {
+                    fixed.push({
+                        file: pkg.path,
+                        created: [`${BEE2_DIR}\\packages\\Dog's WIP Package.bee_pack`],
+                    })
+                }
+            }
             for (const group of duplicates.packages) {
                 const kept = choices.packages?.[group.id] ?? group.copies[0].path
                 removed.push(...group.copies.filter((c) => c.path !== kept).map((c) => c.path))
@@ -1058,7 +1103,8 @@ const bridge = {
             })
             const switching = onBeepm.filter((p) => adopt.includes(p.id))
             state.appSettings.keepOwn.push(...keep)
-            if ((removed.length || switching.length) && state.bee2Running && !closeBee2) {
+            const changing = removed.length || switching.length || fixed.length
+            if (changing && state.bee2Running && !closeBee2) {
                 return fail("BEE2 is open, and it has the package files open.", {
                     code: "bee2_running",
                 })
@@ -1078,10 +1124,11 @@ const bridge = {
                 }
                 installed.push(`${name}@${doc.latest}`)
             }
-            state.check = { duplicates: { packages: [], items: [] }, onBeepm: [] }
+            state.check = { duplicates: { packages: [], items: [] }, onBeepm: [], damaged: [] }
             return ok({
                 removed,
                 uninstalled: [],
+                fixed,
                 installed,
                 replaced: switching.map((p) => ({ name: p.package, files: [p.file] })),
             })
@@ -1349,7 +1396,11 @@ const bridge = {
             await sleep(250)
             if (!isAdmin())
                 return fail("Only admins can do this.", { code: "admin_required", status: 403 })
-            state.docs.get(name).removed = { at: new Date().toISOString(), reason: reason || null }
+            state.docs.get(name).removed = {
+                at: new Date().toISOString(),
+                reason: reason || null,
+                beeIdReleased: false,
+            }
             return ok()
         },
         restorePackage: async (name) => {
@@ -1357,6 +1408,15 @@ const bridge = {
             if (!isAdmin())
                 return fail("Only admins can do this.", { code: "admin_required", status: 403 })
             delete state.docs.get(name).removed
+            return ok()
+        },
+        releaseBeeId: async (name) => {
+            await sleep(250)
+            if (!isAdmin())
+                return fail("Only admins can do this.", { code: "admin_required", status: 403 })
+            const doc = state.docs.get(name)
+            if (!doc.removed) return fail(`Remove ${name} first: it uses its BEE2 ID.`)
+            doc.removed.beeIdReleased = true
             return ok()
         },
     },

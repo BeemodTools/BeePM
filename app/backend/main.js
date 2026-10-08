@@ -173,6 +173,8 @@ function ask(question) {
                     toast: "adopt",
                     count: question.packages.length,
                     name: question.packages[0].name,
+                    // Who publishes it on BeePM: its scope (any package can have that ID first)
+                    by: /^@([^/]+)\//.exec(question.packages[0].package)?.[1] ?? "",
                 },
                 several ? ["use", "keep", "choose"] : ["use", "keep"],
                 minutes(2),

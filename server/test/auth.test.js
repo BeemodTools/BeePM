@@ -209,6 +209,13 @@ test("tokens: list, publish tokens, revoke and logout", async () => {
     assert.equal(after.body.error.code, "invalid_token")
 })
 
+test("a new account's nickname from Discord or GitHub is made plain ASCII", async () => {
+    const github = t.profile({ username: "jose-p", displayName: " José 🐝 Аreng " })
+    const { token } = await login(t, github, { handle: "jose-p" })
+    const me = (await api(t, token, "GET", "/v1/me")).body
+    assert.equal(me.user.displayName, "Jose reng") // the Cyrillic "А" is left out, not kept
+})
+
 test("account settings: nickname and which linked account's picture to show", async () => {
     const github = t.profile({ username: "Painter", avatarUrl: "https://gh.example/painter.png" })
     const { token } = await login(t, github, { handle: "painter" })
@@ -221,7 +228,8 @@ test("account settings: nickname and which linked account's picture to show", as
     assert.equal(renamed.status, 200, JSON.stringify(renamed.body))
     assert.equal(renamed.body.user.displayName, "Paint Master")
     assert.equal(renamed.body.user.handle, "painter") // the handle never changes
-    for (const bad of ["", "   ", "x".repeat(51)]) {
+    // Plain ASCII only: Cyrillic "а" in "аreng" looks like another user's handle
+    for (const bad of ["", "   ", "x".repeat(51), "аreng", "José", "Painter 🎨"]) {
         assert.equal((await api(t, token, "PATCH", "/v1/me", { displayName: bad })).status, 400)
     }
 

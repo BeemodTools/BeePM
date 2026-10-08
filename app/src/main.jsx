@@ -52,6 +52,7 @@ function render() {
                         switching={Boolean(params.get("switching"))}
                         version={params.get("version")}
                         text={params.get("text")}
+                        by={params.get("by")}
                     />
                 ) : (
                     <App />

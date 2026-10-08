@@ -1,7 +1,7 @@
 import { readdir, readFile, stat } from "node:fs/promises"
 import path from "node:path"
 import { parseKeyValues } from "../infotxt.js"
-import { readPack } from "../pack.js"
+import { inspectBee2Zip } from "./bee2zip.js"
 import { exists, readJson, writeJson } from "./files.js"
 
 /**
@@ -16,7 +16,7 @@ const READS_AT_ONCE = 4
 const MAX_INFO_BYTES = 16 * 1024 * 1024
 const isPackFile = (name) => /\.(bee_pack|zip)$/i.test(name)
 // Bumped when what's read from a package changes, so older cache files are read again
-const CACHE_VERSION = 1
+const CACHE_VERSION = 2
 const key = (p) => (process.platform === "win32" ? path.resolve(p).toLowerCase() : path.resolve(p))
 
 /** Runs fn over every item, `limit` at a time. The results keep the items' order. */
@@ -63,26 +63,39 @@ export function readPackageInfo(infoText) {
     return { id: id.toUpperCase(), name: textValue(pairs, "name"), items: [...items] }
 }
 
-async function readPackage(target, isFolder) {
+/** What's read from a package (see scanPackages); `checked`: a zip's files were all checked. */
+async function readPackage(target, isFolder, deep) {
+    let text
+    if (isFolder) {
+        text = await readFile(path.join(target, "info.txt"), "utf8").catch(() => null)
+        if (text === null) {
+            return { problem: { kind: "unreadable", message: "Its info.txt can't be read" } }
+        }
+    } else {
+        const zip = await inspectBee2Zip(target, { deep, maxInfoBytes: MAX_INFO_BYTES })
+        if (zip.problem) return { problem: zip.problem, checked: deep }
+        text = zip.infoText
+    }
     try {
-        const text = isFolder
-            ? await readFile(path.join(target, "info.txt"), "utf8")
-            : (await readPack(target, { maxInfoBytes: MAX_INFO_BYTES })).infoText
-        if (text == null) return { problem: "It has no info.txt" }
-        return readPackageInfo(text)
+        return { ...readPackageInfo(text), checked: deep || isFolder }
     } catch (err) {
-        return { problem: `It can't be read: ${err.problems?.[0] ?? err.message}` }
+        return { problem: { kind: "bad-info", message: `Its ${err.message}` }, checked: deep }
     }
 }
 
 /**
  * Every package in `folder`: [{ path, isFolder, id, name, items, modified }], or { path,
- * isFolder, problem } for one that can't be read. `modified` is when the file (a folder's
- * info.txt) last changed. Folders in `skip` aren't looked into. cacheFile remembers what was
- * read, by path, size and time, so a second scan only reads what changed.
+ * isFolder, problem: { kind, message, folders? } } for one BEE2 can't load (see bee2zip.js).
+ * `modified` is when the file (a folder's info.txt) last changed. Folders in `skip` aren't
+ * looked into. deep: every file in the zips is checked too (slower). cacheFile remembers what
+ * was read, by path, size and time, so a second scan only reads what changed (and, deep, what
+ * wasn't checked before).
  * onProgress({ done, total })
  */
-export async function scanPackages(folder, { skip = [], cacheFile = null, onProgress } = {}) {
+export async function scanPackages(
+    folder,
+    { skip = [], cacheFile = null, deep = false, onProgress } = {},
+) {
     const skipped = new Set(skip.filter(Boolean).map(key))
     const candidates = [] // [path, isFolder]
     async function walk(dir, depth) {
@@ -108,12 +121,16 @@ export async function scanPackages(folder, { skip = [], cacheFile = null, onProg
     const found = await mapLimit(candidates, READS_AT_ONCE, async ([full, isFolder]) => {
         const info = await stat(isFolder ? path.join(full, "info.txt") : full).catch(() => null)
         let entry = cached[full]
-        if (!info) entry = { problem: "It can't be read" }
-        else if (entry?.size !== info.size || entry?.modified !== info.mtimeMs) {
+        if (!info) entry = { problem: { kind: "unreadable", message: "It can't be read" } }
+        else if (
+            entry?.size !== info.size ||
+            entry?.modified !== info.mtimeMs ||
+            (deep && !entry.checked)
+        ) {
             entry = {
                 size: info.size,
                 modified: info.mtimeMs,
-                ...(await readPackage(full, isFolder)),
+                ...(await readPackage(full, isFolder, deep)),
             }
         }
         fresh[full] = entry

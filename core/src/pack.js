@@ -136,7 +136,7 @@ function decodeZipLzma(raw, uncompressedSize) {
  * The contents of a zip entry, in memory. Handles stored and deflated entries, and LZMA ones
  * (BEE2's own packages are LZMA-compressed, which yauzl can't decode by itself).
  */
-async function readEntryBytes(zipfile, entry) {
+export async function readEntryBytes(zipfile, entry) {
     const lzma = entry.compressionMethod === LZMA
     const stream = await zipfile.openReadStreamPromise(
         entry,

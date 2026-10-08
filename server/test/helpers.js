@@ -70,6 +70,7 @@ export async function setup(env = {}) {
         profile({
             provider = "github",
             username,
+            displayName = username,
             ageDays = 365,
             id = String(nextId++),
             avatarUrl = null,
@@ -79,7 +80,7 @@ export async function setup(env = {}) {
                 provider,
                 providerId: id,
                 username,
-                displayName: username,
+                displayName,
                 avatarUrl,
                 accountCreatedAt: new Date(Date.now() - ageDays * DAY).toISOString(),
             })

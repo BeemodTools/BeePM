@@ -2,12 +2,13 @@ import { requireUser } from "../auth/guard.js"
 import { createToken } from "../auth/tokens.js"
 import { audit } from "../lib/audit.js"
 import { badRequest, conflict, notFound } from "../lib/errors.js"
-import { listIdentities, publicUser, publishEligibility } from "../services/users.js"
-
-// Nicknames: 1-50 characters, no control characters
-const NICKNAME_MAX = 50
-// eslint-disable-next-line no-control-regex
-const CONTROL_CHARS = /[\u0000-\u001f\u007f]/
+import {
+    listIdentities,
+    NICKNAME_CHARS,
+    NICKNAME_MAX,
+    publicUser,
+    publishEligibility,
+} from "../services/users.js"
 
 /** The logged-in user's account: profile, linked logins, and tokens. */
 export default async function meRoutes(app) {
@@ -49,9 +50,9 @@ export default async function meRoutes(app) {
 
         if (displayName !== undefined) {
             const name = typeof displayName === "string" ? displayName.trim() : ""
-            if (!name || name.length > NICKNAME_MAX || CONTROL_CHARS.test(name)) {
+            if (!name || name.length > NICKNAME_MAX || !NICKNAME_CHARS.test(name)) {
                 throw badRequest(
-                    `Your nickname must be 1 to ${NICKNAME_MAX} characters.`,
+                    `Your nickname must be 1 to ${NICKNAME_MAX} characters, with only English letters, numbers, spaces and keyboard symbols.`,
                     "invalid_nickname",
                 )
             }

@@ -8,7 +8,7 @@ import Brand from "./Brand.jsx"
  * What a corner question says, and its answers: [label, answer, style]. The first answer is
  * the main one; "quiet" ones go to the right. Closing the window is always "later".
  */
-function question({ kind, name, from, to, count, folder, switching, version, text }) {
+function question({ kind, name, from, to, count, folder, switching, version, text, by }) {
     switch (kind) {
         case "broken":
             return {
@@ -81,7 +81,7 @@ function question({ kind, name, from, to, count, folder, switching, version, tex
                   }
                 : {
                       title: `Use BeePM's ${name}?`,
-                      text: "You have your own copy. BeePM's gets updates.",
+                      text: `By @${by}. BeePM's gets updates.`,
                       answers: [
                           ["Use BeePM's", "use"],
                           ["Keep mine", "keep"],

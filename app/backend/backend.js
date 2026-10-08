@@ -13,6 +13,7 @@ import {
     createClientContext,
     endLeftoverBee2,
     findBee2Program,
+    fixPackageFolders,
     findBee2Programs,
     findLeftoverBee2,
     hasHook,
@@ -262,24 +263,33 @@ export async function createBackend(deps = {}) {
             return result
         },
 
-        /** What the BEE2 check finds now (see core's checkBee2Packages), or null without BEE2. */
-        async checkBee2() {
+        /**
+         * What the BEE2 check finds now (see core's checkBee2Packages), or null without BEE2.
+         * deep: every file in the zips is checked too ("Check packages"; slower the first time).
+         */
+        async checkBee2({ deep = false } = {}) {
             const { keepOwn } = await this.settings.load()
-            return checkBee2Packages(ctx, { keepOwn })
+            return checkBee2Packages(ctx, { keepOwn, deep })
         },
 
         /**
-         * Changes BEE2's packages the way the user chose, with BEE2 closed: removes duplicates
-         * (to the Recycle Bin), installs BeePM's version of the user's own packages (theirs go
-         * to BeePM's backups) and installs updates. Returns { removed, uninstalled, installed,
-         * replaced }.
+         * Changes BEE2's packages the way the user chose, with BEE2 closed: removes packages
+         * (duplicates, ones BEE2 can't load; to the Recycle Bin), fixes zips with packages in
+         * folders (fix: [{ file, folders }]), installs BeePM's version of the user's own packages
+         * (theirs go to BeePM's backups) and installs updates. Returns { removed, uninstalled,
+         * fixed: [{ file, created }], installed, replaced }.
          */
-        applyWork({ remove = [], adopt = [], update = [] }) {
+        applyWork({ remove = [], fix = [], adopt = [], update = [] }) {
             const parts = [
                 remove.length &&
                     `deleting ${listOf(
                         remove.map((f) => path.basename(f)),
-                        "duplicates",
+                        "packages",
+                    )}`,
+                fix.length &&
+                    `fixing ${listOf(
+                        fix.map((f) => path.basename(f.file)),
+                        "packages",
                     )}`,
                 adopt.length && `switching ${listOf(adopt, "packages")} to BeePM's`,
                 update.length && `updating ${listOf(update, "packages")}`,
@@ -288,7 +298,21 @@ export async function createBackend(deps = {}) {
             return this.lock(() =>
                 step(title || "Nothing to change", async () => {
                     await this.endLeftoverBee2() // it has the files open
-                    const result = { removed: [], uninstalled: [], installed: [], replaced: [] }
+                    const result = {
+                        removed: [],
+                        uninstalled: [],
+                        fixed: [],
+                        installed: [],
+                        replaced: [],
+                    }
+                    for (const { file, folders } of fix) {
+                        const created = await fixPackageFolders(ctx, file, folders, {
+                            remove: deps.trash ?? undefined,
+                        })
+                        for (const made of created) log.info(`Made ${made}`)
+                        log.info(`Deleted ${file}`)
+                        result.fixed.push({ file, created })
+                    }
                     if (remove.length) {
                         Object.assign(
                             result,

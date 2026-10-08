@@ -1,5 +1,26 @@
 import { BUILTIN_SCOPE, isValidHandle, RESERVED_HANDLES, suggestHandle } from "@beepm/core"
 
+export const NICKNAME_MAX = 50
+// Nicknames are plain ASCII, printable: letters from other alphabets can look like someone
+// else's handle (Cyrillic "а" for "a")
+export const NICKNAME_CHARS = /^[\x20-\x7E]+$/
+
+/**
+ * A nickname from elsewhere (a Discord or GitHub name) as BeePM keeps it: accents dropped
+ * ("José" -> "Jose"), anything else that isn't ASCII left out, one space at a time, at most
+ * NICKNAME_MAX characters. Null if nothing's left.
+ */
+export function asciiNickname(name) {
+    const folded = String(name ?? "")
+        .normalize("NFKD")
+        .replace(/[^\x20-\x7E]/g, "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, NICKNAME_MAX)
+        .trim()
+    return folded || null
+}
+
 /** Why a handle can't be used, or null if it's available. */
 export async function handleProblem(db, handle) {
     if (!isValidHandle(handle)) {
@@ -48,7 +69,7 @@ export async function createUser(db, { handle, profile, role = "user", claimed =
              VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
             [
                 handle,
-                profile?.displayName || null,
+                asciiNickname(profile?.displayName),
                 profile?.avatarUrl || null,
                 profile?.avatarUrl ? profile.provider : null,
                 role,

@@ -111,8 +111,14 @@ export function packageSummary(pkg, versions, counts = {}) {
         updatedAt: pkg.updated_at,
         downloads: versions.reduce((sum, v) => sum + Number(v.downloads || 0), 0),
         contents: counts,
-        // Only admins are shown removed packages
-        removed: pkg.removed_at ? { at: pkg.removed_at, reason: pkg.removed_reason } : undefined,
+        // Only admins are shown removed packages (beeIdReleased: another package may use its ID)
+        removed: pkg.removed_at
+            ? {
+                  at: pkg.removed_at,
+                  reason: pkg.removed_reason,
+                  beeIdReleased: Boolean(pkg.bee_id_released),
+              }
+            : undefined,
     }
 }
 

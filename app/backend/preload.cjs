@@ -91,6 +91,7 @@ contextBridge.exposeInMainWorld("beepm", {
     admin: {
         removePackage: call("admin:remove-package"),
         restorePackage: call("admin:restore-package"),
+        releaseBeeId: call("admin:release-bee-id"),
     },
 
     /** A corner question's window (src/components/UpdateToast.jsx) answering. */

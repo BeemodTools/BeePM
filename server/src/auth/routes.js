@@ -4,6 +4,7 @@ import { randomId, safeEqual, sha256Hex } from "../lib/ids.js"
 import { createRateLimiter } from "../lib/ratelimit.js"
 import {
     addIdentity,
+    asciiNickname,
     createUser,
     findUserByIdentity,
     freeHandleFor,
@@ -487,7 +488,7 @@ export default async function authRoutes(app) {
                 [
                     user.id,
                     profile.avatarUrl,
-                    profile.displayName,
+                    asciiNickname(profile.displayName),
                     config.bootstrapAdmins.includes(user.handle),
                     profile.provider,
                 ],

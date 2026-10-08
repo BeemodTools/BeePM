@@ -85,5 +85,12 @@ export function manageHandlers({ ctx, step }) {
             await step(`Restoring ${pkg}`, () => api.admin.restorePackage(pkg))
             return {}
         },
+
+        // A removed package keeps its BEE2 ID: this lets another package use it
+        "admin:release-bee-id": async (name) => {
+            const pkg = packageName(name)
+            await step(`Letting go of ${pkg}'s BEE2 ID`, () => api.admin.releaseBeeId(pkg))
+            return {}
+        },
     }
 }

@@ -11,8 +11,10 @@ import {
     DialogContent,
     DialogTitle,
     FormControlLabel,
+    MenuItem,
     Radio,
     RadioGroup,
+    TextField,
     Typography,
 } from "@mui/material"
 import { api } from "../api.js"
@@ -21,6 +23,9 @@ import { useApp } from "../state/context.js"
 import ErrorAlert from "./ErrorAlert.jsx"
 
 const smallChip = { height: 20, fontSize: 11 }
+// Who publishes a package on BeePM: its scope ("@areng/items" -> "areng"). Shown with BeePM's
+// version of a package, since any package can have that BEE2 ID first.
+const publisherOf = (name) => /^@([^/]+)\//.exec(name)?.[1] ?? name
 const groupSx = { mb: 2 }
 const optionSx = { mr: 0, alignItems: "flex-start", "& .MuiRadio-root": { pt: 0.75 } }
 
@@ -58,6 +63,7 @@ function useReview(active, reviewId = null) {
     const [check, setCheck] = useState(null) // what bee2:check found, or { error }
     const [choices, setChoices] = useState({ packages: {}, items: {} })
     const [adopt, setAdopt] = useState({}) // BEE2 ID -> use BeePM's version
+    const [repair, setRepair] = useState({}) // path of a package BEE2 can't load -> fix/remove/leave
     const [working, setWorking] = useState(false)
     const [bee2Open, setBee2Open] = useState(false)
 
@@ -79,6 +85,12 @@ function useReview(active, reviewId = null) {
                 ),
             })
             setAdopt(Object.fromEntries(res.onBeepm.map((p) => [p.id, true])))
+            // Fixed when it can be, else removed (to the Recycle Bin): the user can leave it
+            setRepair(
+                Object.fromEntries(
+                    (res.damaged ?? []).map((p) => [p.path, p.fixable ? "fix" : "remove"]),
+                ),
+            )
         })
         return () => {
             cancelled = true
@@ -88,6 +100,7 @@ function useReview(active, reviewId = null) {
     const duplicates = check?.duplicates
     const groups = duplicates ? duplicates.packages.length + duplicates.items.length : 0
     const onBeepm = check?.onBeepm ?? []
+    const damaged = check?.damaged ?? []
     const loaded = Boolean(check && !check.error)
 
     async function apply(closeBee2 = false) {
@@ -97,6 +110,7 @@ function useReview(active, reviewId = null) {
             choices,
             adopt: onBeepm.filter((p) => adopt[p.id]).map((p) => p.id),
             keep: onBeepm.filter((p) => !adopt[p.id]).map((p) => p.id),
+            damaged: repair,
             closeBee2,
         })
         setWorking(false)
@@ -117,24 +131,31 @@ function useReview(active, reviewId = null) {
         check,
         duplicates,
         onBeepm,
+        damaged,
         choices,
         pick,
         adopt,
         setAdopt,
+        repair,
+        setRepair,
         working,
         bee2Open,
         apply,
         loaded,
         // Nothing to choose: Apply isn't offered
-        nothing: loaded && !groups && !onBeepm.length,
+        nothing: loaded && !groups && !onBeepm.length && !damaged.length,
     }
 }
 
-/** What was applied, for a notice: "Deleted 1 duplicate, installed @a/b@1.0.0". */
+const plural = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`
+
+/** What was applied, for a notice: "Deleted 1 package, fixed 1, installed @a/b@1.0.0". */
 function doneText(res) {
+    const made = (res.fixed ?? []).reduce((sum, f) => sum + f.created.length, 0)
     const done = [
-        res.removed.length &&
-            `Deleted ${res.removed.length} duplicate${res.removed.length === 1 ? "" : "s"}`,
+        res.removed.length && `Deleted ${plural(res.removed.length, "package")}`,
+        res.fixed?.length &&
+            `fixed ${plural(res.fixed.length, "zip")} into ${plural(made, "package")}`,
         res.installed.length && `installed ${res.installed.join(", ")}`,
     ].filter(Boolean)
     if (!done.length) return null
@@ -144,7 +165,8 @@ function doneText(res) {
 
 /** The choices themselves; onApply(closeBee2) when BEE2 has to be closed to finish. */
 function ReviewBody({ review, onApply }) {
-    const { check, duplicates, onBeepm, choices, pick, adopt, setAdopt, working, bee2Open } = review
+    const { check, duplicates, onBeepm, damaged, choices, pick, adopt, setAdopt, repair } = review
+    const { setRepair, working, bee2Open } = review
     return (
         <>
             {!check && (
@@ -156,8 +178,61 @@ function ReviewBody({ review, onApply }) {
             {check?.error && <Alert severity="error">{check.error}</Alert>}
             {review.nothing && (
                 <Typography sx={{ color: "#aaa" }}>
-                    No duplicates, and none of your own packages are on BeePM.
+                    Nothing to fix: no duplicates or broken packages, and none of your own packages
+                    are on BeePM.
                 </Typography>
+            )}
+
+            {damaged.length > 0 && (
+                <Box sx={groupSx}>
+                    <Typography sx={{ color: "#fff", fontWeight: 600 }}>
+                        BEE2 can't load {damaged.length === 1 ? "this" : "these"}
+                    </Typography>
+                    <Typography variant="body2" sx={{ color: "#888" }}>
+                        Fixing makes a package of each folder inside the zip. Removed files go to
+                        the Recycle Bin.
+                    </Typography>
+                    {damaged.map((pkg) => (
+                        <Box
+                            key={pkg.path}
+                            sx={{ display: "flex", alignItems: "center", gap: 2, py: 0.75 }}
+                        >
+                            <Box sx={{ flex: 1, minWidth: 0 }}>
+                                <Typography noWrap sx={{ color: "#fff", fontSize: 14 }}>
+                                    {pkg.file}
+                                    {pkg.managed && (
+                                        <Chip
+                                            label="BeePM"
+                                            size="small"
+                                            color="primary"
+                                            variant="outlined"
+                                            sx={{ ...smallChip, ml: 1 }}
+                                        />
+                                    )}
+                                </Typography>
+                                <Typography variant="body2" sx={{ color: "#888" }}>
+                                    {pkg.message}
+                                </Typography>
+                            </Box>
+                            <TextField
+                                select
+                                size="small"
+                                value={repair[pkg.path] ?? "leave"}
+                                onChange={(event) =>
+                                    setRepair((current) => ({
+                                        ...current,
+                                        [pkg.path]: event.target.value,
+                                    }))
+                                }
+                                sx={{ width: 130, flexShrink: 0 }}
+                            >
+                                {pkg.fixable && <MenuItem value="fix">Fix it</MenuItem>}
+                                <MenuItem value="remove">Remove it</MenuItem>
+                                <MenuItem value="leave">Leave it</MenuItem>
+                            </TextField>
+                        </Box>
+                    ))}
+                </Box>
             )}
             {check?.offline && (
                 <Alert severity="warning" sx={{ mt: 1 }}>
@@ -239,7 +314,10 @@ function ReviewBody({ review, onApply }) {
                             label={
                                 <Box sx={{ minWidth: 0, py: 0.5 }}>
                                     <Typography noWrap sx={{ color: "#fff", fontSize: 14 }}>
-                                        Use BeePM's {pkg.name}
+                                        Use BeePM's {pkg.name}{" "}
+                                        <Box component="span" sx={{ color: "#aaa" }}>
+                                            by @{publisherOf(pkg.package)}
+                                        </Box>
                                     </Typography>
                                     <Typography variant="body2" noWrap sx={{ color: "#888" }}>
                                         {pkg.package} · yours: {pkg.file}

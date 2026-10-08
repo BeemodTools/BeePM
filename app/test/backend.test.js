@@ -812,6 +812,73 @@ test("while BEE2 is open nothing is installed or removed; the window opens and c
     await backend.dispose()
 })
 
+test("Check packages: zips BEE2 can't load are listed, then fixed into packages or removed", async () => {
+    const folder = await fakeBee2(path.join(dir, "damaged-bee2", "BEE2"))
+    const packages = path.join(folder, "packages")
+    // A package in a folder inside its zip (a GitHub "Download ZIP"), one that's no package at
+    // all, and a download that didn't finish
+    const nested = path.join(packages, "Dogs_WIP_package.bee_pack")
+    await writeFile(
+        nested,
+        await zipBytes({
+            "READ ME.txt": "hi",
+            "Dog's WIP Package/info.txt": '"ID" "DOGS_WIP"\n"Name" "Dog\'s WIP"\n',
+            "Dog's WIP Package/items/dog/editoritems.txt": "item",
+        }),
+    )
+    const junk = path.join(packages, "ConcentratedParticleField.bee_pack")
+    await writeFile(junk, await zipBytes({ "A.txt": "nothing" }))
+    const cut = path.join(packages, "cut.zip")
+    await writeFile(cut, "PK\u0003\u0004 and then nothing")
+    const { backend } = await startBackend({
+        home: path.join(dir, "damaged-home"),
+        bee2Process: {
+            isRunning: async () => false,
+            findProgram: async () => null,
+            programs: async () => [],
+            leftovers: async () => [],
+        },
+    })
+    assert.equal((await backend.invoke("bee2:set-folder", folder)).ok, true)
+
+    const check = await backend.invoke("bee2:check")
+    assert.equal(check.ok, true, check.error)
+    assert.deepEqual(Object.fromEntries(check.damaged.map((p) => [p.file, p.fixable])), {
+        "ConcentratedParticleField.bee_pack": false,
+        "Dogs_WIP_package.bee_pack": true,
+        "cut.zip": false,
+    })
+    assert.match(
+        check.damaged.find((p) => p.fixable).message,
+        /folder "Dog's WIP Package" inside it/,
+    )
+
+    // Fix one, remove one, leave the last
+    const done = await backend.invoke("bee2:resolve", {
+        reviewId: check.reviewId,
+        damaged: { [nested]: "fix", [junk]: "remove", [cut]: "leave" },
+    })
+    assert.equal(done.ok, true, done.error)
+    assert.deepEqual(done.removed, [junk])
+    assert.deepEqual(
+        done.fixed.map((f) => [path.basename(f.file), f.created.map((c) => path.basename(c))]),
+        [["Dogs_WIP_package.bee_pack", ["Dog's WIP Package.bee_pack"]]],
+    )
+    await access(path.join(packages, "Dog's WIP Package.bee_pack"))
+    // Put away: BeePM's backups here (the Recycle Bin in the app)
+    await assert.rejects(access(nested))
+    await access(path.join(dir, "damaged-home", "replaced", "Dogs_WIP_package.bee_pack"))
+    await access(cut)
+
+    // What's left: only the one that was left
+    const after = await backend.invoke("bee2:check")
+    assert.deepEqual(
+        after.damaged.map((p) => p.file),
+        ["cut.zip"],
+    )
+    await backend.dispose()
+})
+
 test('"View contents" opens a window for a real package version only', async () => {
     const shown = []
     const { backend } = await startBackend({

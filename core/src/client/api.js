@@ -165,6 +165,8 @@ export function createApi({
             removePackage: (name, reason) =>
                 request("DELETE", `/v1/admin${pkg(name).slice(3)}`, { reason }),
             restorePackage: (name) => request("POST", `/v1/admin${pkg(name).slice(3)}/restore`),
+            releaseBeeId: (name) =>
+                request("POST", `/v1/admin${pkg(name).slice(3)}/release-bee-id`),
             updateUser: (handle, changes) =>
                 request(
                     "PATCH",

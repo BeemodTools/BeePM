@@ -137,16 +137,18 @@ export function bee2Handlers(shared) {
             }),
 
         /**
-         * What the BEE2 check finds, to choose from: { reviewId, duplicates, onBeepm, offline }.
-         * With { reviewId } it's that check again (the corner window's "Choose": BEE2's packages
-         * were just looked at), else a new one. Each copy of a package has { path, file, name,
-         * modified, managed } (managed: installed from BeePM).
+         * What the BEE2 check finds, to choose from: { reviewId, duplicates, onBeepm, damaged,
+         * offline }. With { reviewId } it's that check again (the corner window's "Choose":
+         * BEE2's packages were just looked at), else a new one, which checks every file in the
+         * zips too. Each copy of a package has { path, file, name, modified, managed } (managed:
+         * installed from BeePM); damaged: [{ path, file, message, managed, fixable }] (fixable:
+         * a zip with packages in folders).
          */
         "bee2:check": async (request = {}) => {
             let reviewId = typeof request?.reviewId === "string" ? request.reviewId : null
             let check = reviewId ? reviews.get(reviewId) : null
             if (!check) {
-                check = await shared.checkBee2()
+                check = await shared.checkBee2({ deep: true })
                 if (!check) {
                     throw new AppError("Choose where BEE2 is installed first.", {
                         code: "bee2_not_set",
@@ -165,6 +167,13 @@ export function bee2Handlers(shared) {
                     })),
                 },
                 onBeepm: check.onBeepm,
+                damaged: (check.damaged ?? []).map((pkg) => ({
+                    path: pkg.path,
+                    file: pkg.file,
+                    message: pkg.message,
+                    managed: Boolean(pkg.managed),
+                    fixable: Boolean(pkg.folders?.length),
+                })),
                 offline: check.offline,
             }
         },
@@ -173,8 +182,9 @@ export function bee2Handlers(shared) {
          * Does what the user chose in BeePM's window for a check: { reviewId, choices (which
          * copy or package to keep, see duplicateRemovals), adopt: [BEE2 IDs to switch to
          * BeePM's version], keep: [BEE2 IDs whose own copy stays, not asked about again],
-         * closeBee2 }. BEE2 has the package files open: with closeBee2 it's asked to close (and
-         * opened again after); otherwise a running BEE2 is the answer, with code "bee2_running".
+         * damaged: { path: "fix" | "remove" } (others are left), closeBee2 }. BEE2 has the
+         * package files open: with closeBee2 it's asked to close (and opened again after);
+         * otherwise a running BEE2 is the answer, with code "bee2_running".
          */
         "bee2:resolve": async (request = {}) => {
             const review = reviews.get(request?.reviewId)
@@ -188,10 +198,20 @@ export function bee2Handlers(shared) {
             const keepIds = new Set(strings(request.keep))
             const adopt = review.onBeepm.filter((p) => adoptIds.has(p.id)).map((p) => p.package)
             const keep = review.onBeepm.filter((p) => keepIds.has(p.id)).map((p) => p.id)
+            // Only what the check found: the paths come from the window
+            const damagedChoices = Object(request.damaged)
+            const fix = []
+            for (const pkg of review.damaged ?? []) {
+                const choice = damagedChoices[pkg.path]
+                if (choice === "remove") remove.push(pkg.path)
+                else if (choice === "fix" && pkg.folders?.length) {
+                    fix.push({ file: pkg.path, folders: pkg.folders })
+                }
+            }
             if (keep.length) await shared.keepOwn(keep)
-            if (!remove.length && !adopt.length) {
+            if (!remove.length && !adopt.length && !fix.length) {
                 reviews.delete(request.reviewId)
-                return { removed: [], uninstalled: [], installed: [], replaced: [] }
+                return { removed: [], uninstalled: [], fixed: [], installed: [], replaced: [] }
             }
 
             // Only BeePM's BEE2 has these files open (another BEE2 can stay open)
@@ -212,7 +232,7 @@ export function bee2Handlers(shared) {
             }
             reviews.delete(request.reviewId)
             try {
-                return await shared.applyWork({ remove, adopt })
+                return await shared.applyWork({ remove, fix, adopt })
             } finally {
                 if (program) deps.openProgram(program)
             }

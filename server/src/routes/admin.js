@@ -29,7 +29,7 @@ export default async function adminRoutes(app) {
         return { ok: true }
     })
 
-    // Refused while another package uses its BEE2 ID (removing a package frees the ID)
+    // Takes its BEE2 ID back; refused while another package uses it (an admin let go of it)
     app.post("/v1/admin/packages/:scope/:name/restore", async (request) => {
         const user = await admin(request)
         const pkg = await requirePackage(db, request.params.scope, request.params.name, {
@@ -38,14 +38,14 @@ export default async function adminRoutes(app) {
         const fullName = formatName(pkg.scope, pkg.name)
         try {
             await db.query(
-                "UPDATE packages SET removed_at = NULL, removed_reason = NULL WHERE id = $1",
+                "UPDATE packages SET removed_at = NULL, removed_reason = NULL, bee_id_released = false WHERE id = $1",
                 [pkg.id],
             )
         } catch (err) {
             if (err.code !== "23505") throw err
             const { rows } = await db.query(
-                "SELECT scope, name FROM packages WHERE upper(bee_id) = upper($1) AND removed_at IS NULL",
-                [pkg.bee_id],
+                "SELECT scope, name FROM packages WHERE upper(bee_id) = upper($1) AND NOT bee_id_released AND id <> $2",
+                [pkg.bee_id, pkg.id],
             )
             const holder = rows[0] ? formatName(rows[0].scope, rows[0].name) : "Another package"
             throw conflict(
@@ -54,6 +54,24 @@ export default async function adminRoutes(app) {
             )
         }
         await audit(db, user.id, "admin.package.restore", fullName)
+        return { ok: true }
+    })
+
+    // A removed package keeps its BEE2 ID so nobody takes over the people who have it: this lets
+    // go of it on purpose, so another package can use it (e.g. its real author's)
+    app.post("/v1/admin/packages/:scope/:name/release-bee-id", async (request) => {
+        const user = await admin(request)
+        const pkg = await requirePackage(db, request.params.scope, request.params.name, {
+            includeRemoved: true,
+        })
+        const fullName = formatName(pkg.scope, pkg.name)
+        if (!pkg.removed_at) {
+            throw badRequest(`Remove ${fullName} first: it uses its BEE2 ID.`, "not_removed")
+        }
+        await db.query("UPDATE packages SET bee_id_released = true WHERE id = $1", [pkg.id])
+        await audit(db, user.id, "admin.package.release-bee-id", fullName, {
+            beeId: pkg.bee_id,
+        })
         return { ok: true }
     })
 

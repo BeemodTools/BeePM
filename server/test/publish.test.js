@@ -424,11 +424,20 @@ test("admins can remove and restore packages", async () => {
     assert.ok(audit.body.entries.some((e) => e.action === "admin.user.update"))
 })
 
-test("a removed package frees its BEE2 ID, and admins still find it", async () => {
+test("a removed package keeps its BEE2 ID until an admin lets go of it", async () => {
     const admin = boss
+    const mallory = (await login(t, t.profile({ username: "mallory" }), { handle: "mallory" }))
+        .token
     const pack = (name, id = "ALICE_GADGETS") =>
         makePack(t.dir, { id, manifest: { name, version: "1.0.0" } })
     assert.equal((await publish(t, alice, await pack("old-gadgets"))).status, 200)
+    const early = await api(
+        t,
+        admin,
+        "POST",
+        "/v1/admin/packages/@alice/old-gadgets/release-bee-id",
+    )
+    assert.equal(early.body.error.code, "not_removed") // it uses its ID
     const removed = await api(t, admin, "DELETE", "/v1/admin/packages/@alice/old-gadgets", {
         reason: "Renamed",
     })
@@ -440,9 +449,38 @@ test("a removed package frees its BEE2 ID, and admins still find it", async () =
         !names(await api(t, alice, "GET", "/v1/packages?q=gadgets")).includes("@alice/old-gadgets"),
     )
     const found = (await api(t, admin, "GET", "/v1/packages?q=gadgets")).body.packages
-    assert.equal(found.find((p) => p.name === "@alice/old-gadgets")?.removed?.reason, "Renamed")
+    assert.deepEqual(found.find((p) => p.name === "@alice/old-gadgets")?.removed, {
+        at: found.find((p) => p.name === "@alice/old-gadgets").removed.at,
+        reason: "Renamed",
+        beeIdReleased: false,
+    })
 
-    // Its BEE2 ID can be used again; its name stays taken
+    // Nobody can take over the people who have it with its BEE2 ID (and its name isn't told)
+    for (const [who, name] of [
+        [mallory, "gadgets-again"],
+        [alice, "new-gadgets"],
+    ]) {
+        const squat = await publish(t, who, await pack(name))
+        assert.equal(squat.body.error.code, "bee_id_taken")
+        assert.match(squat.body.error.message, /removed from BeePM/)
+        assert.doesNotMatch(squat.body.error.message, /old-gadgets/)
+    }
+    const onlyAdmins = await api(
+        t,
+        alice,
+        "POST",
+        "/v1/admin/packages/@alice/old-gadgets/release-bee-id",
+    )
+    assert.equal(onlyAdmins.status, 403)
+
+    // An admin lets go of it: it can be used again; its name stays taken
+    const released = await api(
+        t,
+        admin,
+        "POST",
+        "/v1/admin/packages/@alice/old-gadgets/release-bee-id",
+    )
+    assert.equal(released.status, 200)
     const renamed = await publish(t, alice, await pack("new-gadgets"))
     assert.equal(renamed.status, 200, JSON.stringify(renamed.body))
     const sameName = await publish(t, alice, await pack("old-gadgets", "OTHER_GADGETS"))

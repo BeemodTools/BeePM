@@ -136,14 +136,17 @@ async function checkTarget(
             }
             ownerId = scopeUser.id
         }
-        // A removed package's ID is free again (see migration 004)
+        // A removed package keeps its ID unless an admin lets go of it (see migration 006):
+        // otherwise anyone could take over the people who have that package
         const { rows: taken } = await db.query(
-            "SELECT scope, name FROM packages WHERE upper(bee_id) = $1 AND removed_at IS NULL",
+            "SELECT scope, name, removed_at FROM packages WHERE upper(bee_id) = $1 AND NOT bee_id_released",
             [beeId],
         )
         if (taken.length) {
             throw conflict(
-                `The BEE2 ID ${beeId} is already used by ${formatName(taken[0].scope, taken[0].name)}. BEE2 can't load two packages with the same ID, so change "ID" in info.txt.`,
+                taken[0].removed_at
+                    ? `The BEE2 ID ${beeId} belongs to a package that was removed from BeePM. If it's yours, ask a BeePM admin.`
+                    : `The BEE2 ID ${beeId} is already used by ${formatName(taken[0].scope, taken[0].name)}. BEE2 can't load two packages with the same ID, so change "ID" in info.txt.`,
                 "bee_id_taken",
             )
         }

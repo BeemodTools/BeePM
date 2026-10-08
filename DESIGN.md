@@ -32,6 +32,10 @@ thing that can write to storage, and it decides who can do what.
 - A BeePM **user** has a `handle` (lowercase, GitHub-style, 1-39 chars), which is the
   `@scope` of their packages. It's picked at signup (prefilled from the provider
   username) and is then locked; only an admin can rename it.
+- A user's **nickname** (shown with the handle) is plain printable ASCII, 1-50 chars, so it
+  can't use letters from other alphabets that look like someone else's handle. One from
+  Discord or GitHub is made so (accents dropped, anything else left out; migration 007 did
+  the same to the ones from before).
 - **Identities** link Discord and/or GitHub accounts to the user, keyed by the
   provider's numeric ID. One of each per user; each provider account belongs to one
   BeePM user. You can't unlink your last identity. Accounts are never merged by email or
@@ -76,9 +80,11 @@ their login link. Pages send `frame-ancestors 'none'` and every form has a CSRF 
   both ends. `@beemod/<BEE2_ID>` refers to BEE2's built-in packages: never in the
   registry, satisfied by BEE2's own files.
 - Every package has one **BEE2 ID** (`bee_id`) from the top-level `"ID"` in its root
-  `info.txt`. It's uppercase `[A-Z0-9_]` and unique across the registry (removed packages
-  don't count), because BEE2 can't load two packages with the same ID. Every version of a
-  package must have the same ID.
+  `info.txt`. It's uppercase `[A-Z0-9_]` and unique across the registry, removed packages
+  included (unless an admin let go of the ID), because BEE2 can't load two packages with
+  the same ID. Every version of a package must have the same ID. The ID is first come,
+  first served, and the desktop app offers BeePM's version of a package by its ID, so it
+  says who publishes it (`@scope`).
 - **Owners** can publish, yank, deprecate and unpublish, and can add or remove owners
   (but can't remove the last one). Creating a package in a scope requires being that
   scope's user (or an admin).
@@ -89,8 +95,11 @@ their login link. Pages send `frame-ancestors 'none'` and every form has a CSRF 
   - **Unpublish** is allowed only within `UNPUBLISH_HOURS` (72) of publishing, and only
     if no other package's current versions depend on it. The number can never be reused.
   - Admins can **remove** a whole package, which hides it from everyone but admins and keeps
-    its files. Its name stays taken, but its BEE2 ID is free for another package; restoring
-    it is refused while another package has the ID.
+    its files. Its name and its BEE2 ID stay taken: nobody can take over the people who have
+    it with another package with its ID (publishing one says the ID belongs to a removed
+    package, not which). An admin can let go of the ID on purpose (`POST
+    /v1/admin/packages/:scope/:name/release-bee-id`, migration 006), e.g. for its real
+    author; restoring the package is refused while another package has the ID.
 
 ### The .bee_pack file (checked by the server on every publish)
 
@@ -304,6 +313,15 @@ banReason, handle}`, `GET /v1/admin/audit`, `POST /v1/admin/import-legacy`.
   `packages/beepm`) that are on BeePM (`POST /v1/lookup`, all at once; one `?beeId=` at a time
   from a registry without it), whose BeePM version gets updates. Fixing duplicates keeps the newest copy of each (by the file's time) unless the
   user picks another; for an item in two packages it's a whole package that goes.
+  It also lists the zips BEE2 can't load (`bee2zip.js`; BEE2 reads them with Python's
+  zipfile): not a zip or cut short, password-protected, packed with compression Python can't
+  read (Deflate64...), no `info.txt`, or `info.txt` only in folders inside the zip. "Check
+  packages" also unpacks every stored and deflated file to compare it with its checksum
+  (BEE2's own LZMA files aren't): about 8 s for 3.8 GB the first time, then only what changed
+  (the scan cache remembers it). Each one can be removed (Recycle Bin) or left; a zip with
+  packages in folders (a GitHub "Download ZIP", packages zipped together) can be fixed: each
+  folder with an `info.txt` (not inside another one) becomes a `.bee_pack` of its own next to
+  it, checked to load before the zip is put away. These aren't asked about when BEE2 opens.
 - Earlier 1.0 builds instead pointed BEE2's `[Directories] package` at `%APPDATA%/beepm/packages`
   ("hooking") and downloaded BEE2's own packages there. `leaveHook` undoes that: as soon as no
   BEE2 is running (it writes its config back when it exits), the old setting is put back (BEE2's

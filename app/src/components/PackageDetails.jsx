@@ -389,7 +389,7 @@ function DetailsBody({ name, onClose }) {
         app.askConfirm({
             title: `Remove ${name} from the registry?`,
             message:
-                "It disappears from search and can't be installed. Its files are kept, so it can be restored.",
+                "It disappears from search and can't be installed. Its files are kept, so it can be restored, and it keeps its BEE2 ID, so no other package can take over the people who have it.",
             input: { label: "Reason (optional)" },
             confirmLabel: "Remove",
             danger: true,
@@ -400,6 +400,15 @@ function DetailsBody({ name, onClose }) {
                 ),
         })
     const restorePackage = () => actNow(api.admin.restorePackage(name), `Restored ${name}.`)
+    const releaseBeeId = () =>
+        app.askConfirm({
+            title: `Let another package use ${doc.beeId}?`,
+            message: `${name} keeps its BEE2 ID while it's removed, so no other package can use it. After this, any package can, and ${name} can only be restored while none does.`,
+            confirmLabel: "Let go of it",
+            danger: true,
+            onConfirm: () =>
+                act(api.admin.releaseBeeId(name), `Another package can use ${doc.beeId} now.`),
+        })
     const stopWatch = () =>
         app.askConfirm({
             title: `Stop publishing new releases of ${watch.repo}?`,
@@ -660,9 +669,24 @@ function DetailsBody({ name, onClose }) {
                     ))}
                 {isAdmin &&
                     (doc?.removed ? (
-                        <MenuItem onClick={manage(restorePackage)} sx={{ color: "warning.main" }}>
-                            Restore
-                        </MenuItem>
+                        [
+                            <MenuItem
+                                key="restore"
+                                onClick={manage(restorePackage)}
+                                sx={{ color: "warning.main" }}
+                            >
+                                Restore
+                            </MenuItem>,
+                            !doc.removed.beeIdReleased && (
+                                <MenuItem
+                                    key="release"
+                                    onClick={manage(releaseBeeId)}
+                                    sx={{ color: "error.main" }}
+                                >
+                                    Let go of its BEE2 ID…
+                                </MenuItem>
+                            ),
+                        ]
                     ) : (
                         <MenuItem onClick={manage(removePackage)} sx={{ color: "error.main" }}>
                             Remove from registry…
