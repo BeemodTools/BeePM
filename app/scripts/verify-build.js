@@ -6,7 +6,7 @@
  * dependencies are packed, and none of the page's (Vite bundles those into dist).
  * A build that fails this has its installer deleted, so it can't be installed by mistake.
  */
-import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs"
+import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import asar from "@electron/asar"
@@ -81,10 +81,20 @@ if (!archives.length) {
     process.exit(1)
 }
 
+// The page this build made (vite build runs first): a packed app older than it is from an
+// earlier build, which electron-builder couldn't replace
+const builtAt = statSync(path.join(app, "dist", "index.html")).mtimeMs
+
 let failed = false
+let stale = false
 for (const archive of archives) {
-    const { files, problems } = check(archive)
     const where = path.relative(app, archive)
+    if (statSync(archive).mtimeMs < builtAt) {
+        failed = stale = true
+        console.error(`verify-build: ${where} is from an earlier build: it wasn't replaced.`)
+        continue
+    }
+    const { files, problems } = check(archive)
     if (!problems.length) {
         console.log(`verify-build: ${where} is fine (${files} files)`)
         continue
@@ -99,7 +109,9 @@ if (failed) {
         if (/\.(exe|blockmap|AppImage|yml)$/i.test(name)) rmSync(path.join(release, name))
     }
     console.error(
-        "verify-build: its installer was deleted. Build again, changing nothing meanwhile.",
+        stale
+            ? "verify-build: its installer was deleted. Something has the old app.asar open (an editor like VS Code, or a copy of BeePM run from release/): close it, then build again."
+            : "verify-build: its installer was deleted. Build again, changing nothing meanwhile.",
     )
     process.exit(1)
 }

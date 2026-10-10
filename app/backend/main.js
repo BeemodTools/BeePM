@@ -49,7 +49,7 @@ app.setPath(
     "userData",
     process.env.BEEPM_USER_DATA || path.join(app.getPath("appData"), "BeePM Desktop"),
 )
-// The installer's app ID (electron-builder.js): Windows shows notifications as from BeePM
+// The installer's app ID (electron-builder.config.js): Windows shows notifications as from BeePM
 if (process.platform === "win32") app.setAppUserModelId("com.beepm.app")
 
 // Bugs in the main process go in the log, and BeePM keeps running

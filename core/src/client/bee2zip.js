@@ -67,9 +67,14 @@ async function intact(zip, entry) {
 /**
  * How BEE2 would see a zip: { infoText (its info.txt, at the top), problem (see problems above,
  * or null) }. deep: every file is unpacked and checked against its checksum too (stored and
- * deflated ones; BEE2's own LZMA-packed files aren't); slower, so the scan remembers it.
+ * deflated ones; BEE2's own LZMA-packed files aren't); slower, so the scan remembers it. A
+ * damaged file still comes with the info.txt, when that reads fine: it says which package it
+ * is. signal stops a deep check between files (it throws).
  */
-export async function inspectBee2Zip(file, { deep = false, maxInfoBytes = 16 * 1024 * 1024 } = {}) {
+export async function inspectBee2Zip(
+    file,
+    { deep = false, maxInfoBytes = 16 * 1024 * 1024, signal } = {},
+) {
     let zip
     try {
         zip = await yauzl.openPromise(file, { lazyEntries: true, autoClose: false })
@@ -91,25 +96,28 @@ export async function inspectBee2Zip(file, { deep = false, maxInfoBytes = 16 * 1
         if (unreadable) {
             return { infoText: null, problem: problems.compression(unreadable.compressionMethod) }
         }
+        let damaged = null // the first file that doesn't unpack to what its checksum says
         if (deep) {
             for (const entry of files) {
+                signal?.throwIfAborted()
                 if (entry.compressionMethod !== 0 && entry.compressionMethod !== 8) continue
-                const fine = await intact(zip, entry).catch(() => false)
-                if (!fine) return { infoText: null, problem: problems.damaged(entry.fileName) }
+                if (!(await intact(zip, entry).catch(() => false))) {
+                    damaged = entry
+                    break
+                }
             }
         }
+        const problem = damaged ? problems.damaged(damaged.fileName) : null
         const info = files.find((entry) => entry.fileName.toLowerCase() === "info.txt")
-        if (info) {
-            if (info.uncompressedSize > maxInfoBytes) return { infoText: "", problem: null }
+        if (info && info !== damaged) {
+            if (info.uncompressedSize > maxInfoBytes) return { infoText: "", problem }
             try {
-                return {
-                    infoText: (await readEntryBytes(zip, info)).toString("utf8"),
-                    problem: null,
-                }
+                return { infoText: (await readEntryBytes(zip, info)).toString("utf8"), problem }
             } catch {
                 return { infoText: null, problem: problems.damaged(info.fileName) }
             }
         }
+        if (problem) return { infoText: null, problem }
         const nested = packageFolders(
             files.map((entry) => entry.fileName).filter((name) => /\/info\.txt$/i.test(name)),
         )

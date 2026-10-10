@@ -16,6 +16,21 @@ const intParam = (value, fallback, max) => {
     return Math.min(n, max)
 }
 
+/**
+ * Where a version imported from a GitHub release is on GitHub. When files were stripped from it,
+ * only with the checksum of the release's file (`sha256`): clients check that, then strip the
+ * same files. Imports keep the release's own URL (`url`); older ones have it pieced together
+ * from the repo, tag and file name.
+ */
+export function githubDownloadUrl(source) {
+    if (source?.type !== "github" || (source.stripped && !source.sha256)) return null
+    if (typeof source.url === "string" && source.url.startsWith("https://github.com/")) {
+        return source.url
+    }
+    if (!/^[\w.-]+\/[\w.-]+$/.test(source.repo ?? "") || !source.tag || !source.asset) return null
+    return `https://github.com/${source.repo}/releases/download/${encodeURIComponent(source.tag)}/${encodeURIComponent(source.asset)}`
+}
+
 /** Public, read-only registry endpoints. */
 export default async function packageRoutes(app) {
     const { db, storage, config } = app.deps
@@ -94,19 +109,29 @@ export default async function packageRoutes(app) {
         },
     )
 
+    // ?from=github: a version imported from a GitHub release is downloaded from that release, so
+    // it counts in the release's downloads too. Clients that ask for it check the SHA-256 and,
+    // when GitHub's file fails or isn't the same one, ask again with ?from=beepm: this
+    // registry's copy, not counted (the try before it was). Without `from`, this registry's copy
+    // (clients from before, which can't fall back).
     app.get("/v1/packages/:scope/:name/versions/:version/download", async (request, reply) => {
         const { scope, name, version } = request.params
         const pkg = await requirePackage(db, scope, name)
         const { rows } = await db.query(
-            `SELECT id, storage_key FROM versions
+            `SELECT id, storage_key, source FROM versions
               WHERE package_id = $1 AND version = $2 AND unpublished_at IS NULL`,
             [pkg.id, version],
         )
         if (!rows.length)
             throw notFound(`${formatName(pkg.scope, pkg.name)}@${version} doesn't exist.`)
-        db.query("UPDATE versions SET downloads = downloads + 1 WHERE id = $1", [rows[0].id]).catch(
-            () => {},
-        )
+        const from = request.query?.from
+        if (from !== "beepm") {
+            db.query("UPDATE versions SET downloads = downloads + 1 WHERE id = $1", [
+                rows[0].id,
+            ]).catch(() => {})
+        }
+        const github = from === "github" ? githubDownloadUrl(rows[0].source) : null
+        if (github) return reply.redirect(github, 302)
         const url = await storage.downloadUrl(rows[0].storage_key, {
             filename: `${pkg.scope}@${pkg.name}@${version}.bee_pack`,
         })

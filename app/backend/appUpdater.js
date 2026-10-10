@@ -1,8 +1,9 @@
 /**
- * Keeps BeePM itself up to date, from its GitHub releases (electron-updater; electron-builder.js
- * says where they are). It looks for a new version soon after BeePM starts and then every few
- * hours, downloads it in the background, and asks in the corner whether to restart now; if not,
- * the update is installed when BeePM quits (and asked about again at the next look).
+ * Keeps BeePM itself up to date, from its GitHub releases (electron-updater;
+ * electron-builder.config.js says where they are). It looks for a new version soon after BeePM
+ * starts and then every few hours, downloads it in the background, and asks in the corner
+ * whether to restart now; if not, the update is installed when BeePM quits (and asked about
+ * again at the next look).
  * Kept free of Electron:
  *   updater   electron-updater's autoUpdater (or a stand-in with the same events and methods)
  *   ask(version) -> "restart" | "later"

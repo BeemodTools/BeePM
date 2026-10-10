@@ -3,10 +3,10 @@ import path from "node:path"
 import semver from "semver"
 import { isCompatible } from "../compat.js"
 import { BUILTIN_SCOPE, formatName, normalizeBeeId, parseName, parseSpec } from "../names.js"
-import { hashFile } from "../pack.js"
+import { hashFile, stripPack } from "../pack.js"
 import { scanBee2 } from "./check.js"
 import { downloadFile } from "./download.js"
-import { exists, freePath, moveFile, readJson } from "./files.js"
+import { exists, freePath, moveFile, readJson, replaceFile } from "./files.js"
 import { packageFileName } from "./paths.js"
 import { mapLimit } from "./scan.js"
 import { loadConfig, loadInstalled, saveInstalled } from "./state.js"
@@ -278,6 +278,7 @@ export async function planInstall(ctx, specs, { update = false, force = false } 
             explicit,
             sha256: info.sha256,
             size: info.size,
+            release: strippedRelease(info.source),
             beeId: docs.get(name).beeId,
             displayName: docs.get(name).displayName,
             dependencies: info.dependencies ?? {},
@@ -328,6 +329,38 @@ async function pruneOrphans(paths, installed) {
 }
 
 /**
+ * A version from a GitHub release that BeePM stripped files from (its `source`): { sha256, size,
+ * stripped }, the release's file as GitHub has it and what's stripped from it. Null otherwise,
+ * or without the file's checksum (imports from before it was kept).
+ */
+function strippedRelease(source) {
+    if (source?.type !== "github" || !Array.isArray(source.stripped)) return null
+    if (!source.stripped.length || !source.sha256) return null
+    return { sha256: source.sha256, size: source.size ?? null, stripped: source.stripped }
+}
+
+/**
+ * Downloads a GitHub release's file BeePM stripped files from (`release`, see strippedRelease),
+ * checks it against its checksum, and makes `destination` of it without those files: what BeePM
+ * checked when it was published. download(url, destination, expected) as in applyPlan.
+ */
+async function downloadStripped(url, destination, release, download) {
+    const original = `${destination}.${process.pid}.release`
+    const stripped = `${destination}.${process.pid}.stripped`
+    try {
+        await download(url, original, {
+            expectedSha256: release.sha256,
+            expectedSize: release.size ?? undefined,
+        })
+        await stripPack(original, stripped, release.stripped)
+        await replaceFile(stripped, destination)
+    } finally {
+        await rm(original, { force: true })
+        await rm(stripped, { force: true })
+    }
+}
+
+/**
  * Downloads and installs the steps of a plan into BeePM's folder in BEE2's packages folder.
  * Each file is checked against its SHA-256 before it replaces the old one, and the user's own
  * copies a step replaces are moved to BeePM's backups. Returns { installed, removed, replaced }
@@ -345,20 +378,33 @@ export async function applyPlan(ctx, plan, { onProgress } = {}) {
     }
     for (const [index, step] of plan.steps.entries()) {
         const file = packageFileName(step.name)
-        await downloadFile(api.downloadUrl(step.name, step.to), path.join(paths.packages, file), {
-            fetch,
-            expectedSha256: step.sha256,
-            expectedSize: step.size,
-            onProgress: (received, total) =>
-                onProgress?.({
-                    index,
-                    count: plan.steps.length,
-                    name: step.name,
-                    version: step.to,
-                    received,
-                    total,
-                }),
-        })
+        const target = path.join(paths.packages, file)
+        const download = (url, destination, expected) =>
+            downloadFile(url, destination, {
+                fetch,
+                ...expected,
+                onProgress: (received, total) =>
+                    onProgress?.({
+                        index,
+                        count: plan.steps.length,
+                        name: step.name,
+                        version: step.to,
+                        received,
+                        total,
+                    }),
+            })
+        const registryCopy = { expectedSha256: step.sha256, expectedSize: step.size }
+        // A package from a GitHub release comes from there (its downloads count on GitHub too),
+        // the release's file stripped here like BeePM stripped it; if that fails, or GitHub's
+        // file isn't the same one anymore, the registry's own copy
+        const fromGithub = api.downloadUrl(step.name, step.to, { from: "github" })
+        try {
+            if (step.release) await downloadStripped(fromGithub, target, step.release, download)
+            else await download(fromGithub, target, registryCopy)
+        } catch {
+            const fromBeepm = api.downloadUrl(step.name, step.to, { from: "beepm" })
+            await download(fromBeepm, target, registryCopy)
+        }
         const previous = installed.packages[step.name]
         if (previous?.file && previous.file !== file) {
             await rm(path.join(paths.packages, previous.file), { force: true })

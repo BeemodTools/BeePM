@@ -1,4 +1,4 @@
-; BeePM's additions to electron-builder's installer (electron-builder.js: nsis.include).
+; BeePM's additions to electron-builder's installer (electron-builder.config.js: nsis.include).
 ; BeePM starts with Windows when it runs in the background: the "com.beepm.app" Run value, which
 ; BeePM sets itself (main.js applyBackground).
 

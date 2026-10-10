@@ -121,6 +121,7 @@ async function checkWatch(deps, gh, watch) {
                         repo: watch.repo,
                         tag: release.tag_name,
                         asset: asset.name,
+                        url: asset.browser_download_url,
                         automatic: true,
                     },
                 },

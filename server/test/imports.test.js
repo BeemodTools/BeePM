@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { createHash } from "node:crypto"
 import { readFile } from "node:fs/promises"
 import { after, before, test } from "node:test"
 import { api, login, makePack, setup } from "./helpers.js"
@@ -58,8 +59,33 @@ test("publishing from a GitHub release the user owns (disallowed files are strip
     assert.equal(res.status, 200, JSON.stringify(res.body))
     assert.equal(res.body.name, "@areng14/arengitems")
     assert.deepEqual(res.body.strippedFiles, ["README.md"])
-    const doc = await api(t, null, "GET", "/v1/packages/@areng14/arengitems")
+    const docPath = "/v1/packages/@areng14/arengitems"
+    const doc = await api(t, null, "GET", docPath)
     assert.equal(doc.body.versions["4.9.1"].source.repo, "Areng14/ArengBeemodPackages")
+    assert.equal(doc.body.versions["4.9.1"].source.url, asset)
+    // GitHub's file still has what was stripped: its checksum and size are kept, so clients can
+    // download it from GitHub, check it and strip the same files
+    const { source } = doc.body.versions["4.9.1"]
+    assert.deepEqual(source.stripped, ["README.md"])
+    assert.equal(source.sha256, createHash("sha256").update(pack).digest("hex"))
+    assert.equal(source.size, pack.length)
+    const downloadPath = `${docPath}/versions/4.9.1/download?from=github`
+    const download = await api(t, null, "GET", downloadPath)
+    assert.equal(download.status, 302)
+    assert.equal(download.headers.location, asset)
+    // Imports from before get the list from the audit record of their publish (migration 008);
+    // without the release file's checksum they download from BeePM's copy
+    await t.db.query("UPDATE versions SET source = source - 'stripped' - 'sha256' - 'size'")
+    await t.db.exec(
+        await readFile(
+            new URL("../src/db/migrations/008_stripped_github_imports.sql", import.meta.url),
+            "utf8",
+        ),
+    )
+    const marked = await api(t, null, "GET", docPath)
+    assert.deepEqual(marked.body.versions["4.9.1"].source.stripped, ["README.md"])
+    const older = await api(t, null, "GET", downloadPath)
+    assert.ok(!older.headers.location.startsWith("https://github.com/"))
 
     // Someone else's repo is refused
     const { token: other } = await login(t, t.profile({ username: "intruder" }), {
@@ -132,6 +158,24 @@ test("new GitHub releases are published by themselves once it's turned on", asyn
     await release("v1.1.0", "1.1.0", 2)
     assert.deepEqual(await check(), [{ package: pkg, status: "published", version: "1.1.0" }])
     assert.equal((await api(t, null, "GET", `/v1/packages/${pkg}`)).body.latest, "1.1.0")
+
+    // Asked for from GitHub, it downloads from the release itself, so it counts there too.
+    // ?from=beepm (when GitHub's file fails) is BeePM's copy and isn't counted again; clients
+    // from before (no `from`) get BeePM's copy
+    const download = `/v1/packages/${pkg}/versions/1.1.0/download`
+    const fromGithub = await api(t, null, "GET", `${download}?from=github`)
+    assert.equal(fromGithub.status, 302)
+    assert.equal(
+        fromGithub.headers.location,
+        "https://github.com/Watcher/Items/releases/download/v1.1.0/2.bee_pack",
+    )
+    for (const query of ["?from=beepm", ""]) {
+        const res = await api(t, null, "GET", `${download}${query}`)
+        assert.equal(res.status, 302)
+        assert.ok(!res.headers.location.startsWith("https://github.com/"))
+    }
+    const counted = (await api(t, null, "GET", `/v1/packages/${pkg}`)).body.versions["1.1.0"]
+    assert.equal(counted.downloads, 2) // from GitHub, and the client from before
 
     // One that forgot to raise "version" is refused once, and the owner can see why
     await release("v1.2.0", "1.1.0", 3)
@@ -305,4 +349,27 @@ test("the old-registry import uses the owner's BeePM handle, not the old author 
     const doc = await api(t, null, "GET", "/v1/packages/@guy/guy-items")
     assert.deepEqual(doc.body.owners, ["guy"])
     assert.equal((await api(t, null, "GET", "/v1/packages/@someguy/guy-items")).status, 404)
+})
+
+test("where an imported version is on GitHub: its release's own URL, else pieced together", async () => {
+    const { githubDownloadUrl } = await import("../src/routes/packages.js")
+    // An import from before the URL was kept
+    const old = {
+        type: "github",
+        repo: "Some-One/Their.Items",
+        tag: "v1.0 beta",
+        asset: "items pack.bee_pack",
+    }
+    assert.equal(
+        githubDownloadUrl(old),
+        "https://github.com/Some-One/Their.Items/releases/download/v1.0%20beta/items%20pack.bee_pack",
+    )
+    const url = "https://github.com/x/y/releases/download/v1/a.bee_pack"
+    assert.equal(githubDownloadUrl({ ...old, url }), url)
+    // Files stripped from it: only with the release file's checksum (clients check it)
+    const stripped = ["README.md"]
+    assert.equal(githubDownloadUrl({ ...old, url, stripped }), null)
+    assert.equal(githubDownloadUrl({ ...old, url, stripped, sha256: "ab12" }), url)
+    assert.equal(githubDownloadUrl({ ...old, repo: null }), null) // an old-registry entry without one
+    assert.equal(githubDownloadUrl({ type: "upload" }), null)
 })

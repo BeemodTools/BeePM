@@ -16,7 +16,7 @@ const READS_AT_ONCE = 4
 const MAX_INFO_BYTES = 16 * 1024 * 1024
 const isPackFile = (name) => /\.(bee_pack|zip)$/i.test(name)
 // Bumped when what's read from a package changes, so older cache files are read again
-const CACHE_VERSION = 2
+const CACHE_VERSION = 3
 const key = (p) => (process.platform === "win32" ? path.resolve(p).toLowerCase() : path.resolve(p))
 
 /** Runs fn over every item, `limit` at a time. The results keep the items' order. */
@@ -63,39 +63,68 @@ export function readPackageInfo(infoText) {
     return { id: id.toUpperCase(), name: textValue(pairs, "name"), items: [...items] }
 }
 
-/** What's read from a package (see scanPackages); `checked`: a zip's files were all checked. */
-async function readPackage(target, isFolder, deep) {
+/**
+ * What's read from a package (see scanPackages); `checked`: a zip's files were all checked. A
+ * zip with a damaged file keeps what its info.txt says along with the problem.
+ */
+async function readPackage(target, isFolder, deep, signal) {
     let text
+    let problem = null
     if (isFolder) {
         text = await readFile(path.join(target, "info.txt"), "utf8").catch(() => null)
         if (text === null) {
             return { problem: { kind: "unreadable", message: "Its info.txt can't be read" } }
         }
     } else {
-        const zip = await inspectBee2Zip(target, { deep, maxInfoBytes: MAX_INFO_BYTES })
-        if (zip.problem) return { problem: zip.problem, checked: deep }
+        const zip = await inspectBee2Zip(target, { deep, maxInfoBytes: MAX_INFO_BYTES, signal })
+        if (zip.infoText === null) return { problem: zip.problem, checked: deep }
         text = zip.infoText
+        problem = zip.problem
     }
     try {
-        return { ...readPackageInfo(text), checked: deep || isFolder }
+        return { ...readPackageInfo(text), ...(problem && { problem }), checked: deep || isFolder }
     } catch (err) {
-        return { problem: { kind: "bad-info", message: `Its ${err.message}` }, checked: deep }
+        return {
+            problem: problem ?? { kind: "bad-info", message: `Its ${err.message}` },
+            checked: deep,
+        }
     }
 }
 
+// The last scan with each cache file: the next one waits for it (see scanPackages)
+const scansByCache = new Map()
+
 /**
  * Every package in `folder`: [{ path, isFolder, id, name, items, modified }], or { path,
- * isFolder, problem: { kind, message, folders? } } for one BEE2 can't load (see bee2zip.js).
- * `modified` is when the file (a folder's info.txt) last changed. Folders in `skip` aren't
- * looked into. deep: every file in the zips is checked too (slower). cacheFile remembers what
- * was read, by path, size and time, so a second scan only reads what changed (and, deep, what
- * wasn't checked before).
+ * isFolder, problem: { kind, message, folders? } } for one BEE2 can't load (see bee2zip.js; one
+ * with a damaged file has its id, name and items too). `modified` is when the file (a folder's
+ * info.txt) last changed. Folders in `skip` aren't looked into. deep: every file in the zips is
+ * checked too (slower). cacheFile remembers what was read, by path, size and time, so a second
+ * scan only reads what changed (and, deep, what wasn't checked before). Scans with the same
+ * cacheFile take turns, so one started during another reads what that one found. signal stops
+ * the scan (it throws); what it read until then is remembered.
  * onProgress({ done, total })
  */
-export async function scanPackages(
+export function scanPackages(folder, options = {}) {
+    if (!options.cacheFile) return scanFolder(folder, options)
+    const id = key(options.cacheFile)
+    const scan = (scansByCache.get(id) ?? Promise.resolve()).then(() => scanFolder(folder, options))
+    const settled = scan.then(
+        () => {},
+        () => {},
+    )
+    scansByCache.set(id, settled)
+    settled.then(() => {
+        if (scansByCache.get(id) === settled) scansByCache.delete(id)
+    })
+    return scan
+}
+
+async function scanFolder(
     folder,
-    { skip = [], cacheFile = null, deep = false, onProgress } = {},
+    { skip = [], cacheFile = null, deep = false, signal, onProgress } = {},
 ) {
+    signal?.throwIfAborted()
     const skipped = new Set(skip.filter(Boolean).map(key))
     const candidates = [] // [path, isFolder]
     async function walk(dir, depth) {
@@ -117,8 +146,13 @@ export async function scanPackages(
     const cached = saved?.version === CACHE_VERSION ? (saved.packages ?? {}) : {}
     const fresh = {}
     let done = 0
+    let stopped = false // by the signal, before it got to every package
     onProgress?.({ done, total: candidates.length })
     const found = await mapLimit(candidates, READS_AT_ONCE, async ([full, isFolder]) => {
+        if (signal?.aborted) {
+            stopped = true
+            return null
+        }
         const info = await stat(isFolder ? path.join(full, "info.txt") : full).catch(() => null)
         let entry = cached[full]
         if (!info) entry = { problem: { kind: "unreadable", message: "It can't be read" } }
@@ -127,10 +161,16 @@ export async function scanPackages(
             entry?.modified !== info.mtimeMs ||
             (deep && !entry.checked)
         ) {
-            entry = {
-                size: info.size,
-                modified: info.mtimeMs,
-                ...(await readPackage(full, isFolder, deep)),
+            try {
+                entry = {
+                    size: info.size,
+                    modified: info.mtimeMs,
+                    ...(await readPackage(full, isFolder, deep, signal)),
+                }
+            } catch (err) {
+                if (!signal?.aborted) throw err
+                stopped = true
+                return null
             }
         }
         fresh[full] = entry
@@ -139,15 +179,20 @@ export async function scanPackages(
     })
 
     if (cacheFile) {
-        // What's cached for other folders stays; what's gone from this one is forgotten
+        // What's cached for other folders (and the ones skipped) stays; what's gone from this one
+        // is forgotten, unless the scan stopped before it got to everything
         const inside = key(folder) + path.sep
-        const others = Object.fromEntries(
-            Object.entries(cached).filter(([file]) => !key(file).startsWith(inside)),
+        const scanned = (file) =>
+            key(file).startsWith(inside) &&
+            ![...skipped].some((dir) => key(file).startsWith(dir + path.sep))
+        const kept = Object.fromEntries(
+            Object.entries(cached).filter(([file]) => stopped || !scanned(file)),
         )
         await writeJson(cacheFile, {
             version: CACHE_VERSION,
-            packages: { ...others, ...fresh },
+            packages: { ...kept, ...fresh },
         }).catch(() => {})
     }
+    if (stopped) signal.throwIfAborted()
     return found
 }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { createHash } from "node:crypto"
-import { access, copyFile, mkdir, readFile, utimes, writeFile } from "node:fs/promises"
+import { access, copyFile, mkdir, readdir, readFile, utimes, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { after, before, test } from "node:test"
 import {
@@ -23,17 +23,20 @@ import {
     packageFileName,
     planInstall,
     readBee2Version,
+    readJson,
     removeIniKey,
     removePackageFiles,
     saveConfig,
     saveInstalled,
+    scanBee2,
+    scanPackages,
     setBee2Folder,
     setIniValue,
     suggestManifest,
     useBee2Folder,
 } from "../src/client/index.js"
 import { duplicateRemovals, hasDuplicates } from "../src/duplicates.js"
-import { hashFile } from "../src/pack.js"
+import { hashFile, readPack, stripPack } from "../src/pack.js"
 import { infoTxt, makeZip, tempDir } from "./helpers.js"
 
 // Never close the real BEE2 while testing
@@ -462,6 +465,89 @@ test("installing needs BEE2's folder, and replaces the user's own copy of a pack
     await access(path.join(ctx.paths.replaced, "mine.bee_pack")) // kept, not deleted
 })
 
+test("a package from a GitHub release downloads from there, else from BeePM's copy", async () => {
+    const bytes = Buffer.from("the package file")
+    const sha256 = createHash("sha256").update(bytes).digest("hex")
+    const all = {
+        ...docs,
+        "@gh/items": docOf("@gh/items", "GH_ITEMS", [v("1.0.0", { sha256, size: bytes.length })]),
+    }
+    const download = "https://registry.test/download?from=github"
+    const copy = "https://registry.test/download?from=beepm"
+    /** Installs it, with what the registry's download (GitHub's file) gives: the URLs asked. */
+    const install = async (home, github) => {
+        const ctx = fakeContext(home, all)
+        ctx.api.downloadUrl = (_name, _version, { from } = {}) =>
+            `https://registry.test/download?from=${from}`
+        const asked = []
+        ctx.fetch = async (url) => {
+            asked.push(url)
+            return url === copy ? new Response(bytes) : github()
+        }
+        await applyPlan(ctx, await planInstall(ctx, ["@gh/items"]))
+        const file = path.join(ctx.paths.packages, "gh@items.bee_pack")
+        assert.equal(await readFile(file, "utf8"), "the package file")
+        return asked
+    }
+    assert.deepEqual(await install("gh-same", () => new Response(bytes)), [download])
+    // Replaced on GitHub since (not the file BeePM checked), or gone: BeePM's copy
+    const replaced = () => new Response("THE PACKAGE FILE")
+    assert.deepEqual(await install("gh-replaced", replaced), [download, copy])
+    const gone = () => new Response("Not Found", { status: 404 })
+    assert.deepEqual(await install("gh-gone", gone), [download, copy])
+})
+
+test("a GitHub release BeePM stripped files from: its own file, checked, then stripped the same way", async () => {
+    // The release's file has a README.md that BeePM stripped from its copy
+    const release = path.join(tmp.dir, "release-stripped.bee_pack")
+    await makeZip(release, { "info.txt": infoTxt("GH_STRIPPED"), "README.md": "# hi" })
+    const beepmCopy = path.join(tmp.dir, "copy-stripped.bee_pack")
+    await stripPack(release, beepmCopy, ["README.md"])
+    const [releaseBytes, copyBytes] = await Promise.all([readFile(release), readFile(beepmCopy)])
+    const sha = (bytes) => createHash("sha256").update(bytes).digest("hex")
+    const source = {
+        type: "github",
+        stripped: ["README.md"],
+        sha256: sha(releaseBytes),
+        size: releaseBytes.length,
+    }
+    const all = {
+        ...docs,
+        "@gh/stripped": docOf("@gh/stripped", "GH_STRIPPED", [
+            v("1.0.0", { sha256: sha(copyBytes), size: copyBytes.length, source }),
+        ]),
+    }
+    const github = "https://registry.test/download?from=github"
+    const copy = "https://registry.test/download?from=beepm"
+    /** Installs it, with GitHub sending `fromGithub`: the URLs asked, and what got installed. */
+    const install = async (home, fromGithub) => {
+        const ctx = fakeContext(home, all)
+        ctx.api.downloadUrl = (_name, _version, { from } = {}) =>
+            `https://registry.test/download?from=${from}`
+        const asked = []
+        ctx.fetch = async (url) => {
+            asked.push(url)
+            return new Response(url === copy ? copyBytes : fromGithub)
+        }
+        await applyPlan(ctx, await planInstall(ctx, ["@gh/stripped"]))
+        const file = path.join(ctx.paths.packages, "gh@stripped.bee_pack")
+        return {
+            asked,
+            files: (await readPack(file)).files,
+            all: await readdir(ctx.paths.packages),
+        }
+    }
+    // From GitHub, then stripped like BeePM's copy; nothing else left behind
+    const fine = await install("gh-stripped", releaseBytes)
+    assert.deepEqual(fine.asked, [github])
+    assert.deepEqual(fine.files, ["info.txt"])
+    assert.deepEqual(fine.all, ["gh@stripped.bee_pack"])
+    // GitHub's file isn't the one BeePM checked anymore: BeePM's copy
+    const changed = await install("gh-stripped-changed", Buffer.from("not that file"))
+    assert.deepEqual(changed.asked, [github, copy])
+    assert.deepEqual(changed.files, ["info.txt"])
+})
+
 test("the BEE2 check finds duplicates and the user's packages that are on BeePM", async () => {
     const ctx = fakeContext("check", docs)
     const folder = path.join(ctx.paths.bee2Dir, "packages")
@@ -535,6 +621,59 @@ test("the BEE2 check finds duplicates and the user's packages that are on BeePM"
     assert.deepEqual((await loadInstalled(ctx.paths)).packages, {})
     await access(path.join(ctx.paths.replaced, "a_old.bee_pack"))
     assert.equal(hasDuplicates((await checkBee2Packages(ctx)).duplicates), true) // B and A still clash
+})
+
+test("scans of BEE2's packages take turns with the cache, and one that's stopped keeps what it read", async () => {
+    const ctx = fakeContext("turns", docs)
+    const folder = path.join(ctx.paths.bee2Dir, "packages")
+    const ids = ["A", "B", "C", "D", "E", "F"]
+    for (const id of ids) await fakePack(path.join(folder, `${id}.bee_pack`), id, { ago: 60 })
+    const ours = await fakePack(path.join(ctx.paths.packages, "o@o.bee_pack"), "OURS", { ago: 60 })
+    const cacheFile = path.join(ctx.paths.cache, "packages.json")
+    const cached = async () => (await readJson(cacheFile)).packages
+
+    // A quick look started while every file is being checked waits, then reads what that found
+    const [deep, quick] = await Promise.all([
+        scanBee2(ctx.paths, { deep: true }),
+        scanBee2(ctx.paths),
+    ])
+    assert.equal(deep.length, 7)
+    assert.deepEqual(
+        quick.map((pkg) => pkg.checked),
+        deep.map(() => true),
+    )
+    // A look that skips BeePM's folder leaves what's cached for it
+    assert.equal((await scanBee2(ctx.paths, { skipBeepm: true })).length, 6)
+    assert.equal((await cached())[ours].checked, true)
+
+    // Changed since, and stopped after the first one read: the ones it didn't get to stay cached
+    const now = new Date()
+    for (const id of ids) await utimes(path.join(folder, `${id}.bee_pack`), now, now)
+    const controller = new AbortController()
+    await assert.rejects(
+        scanPackages(folder, {
+            skip: [ctx.paths.packages],
+            cacheFile,
+            deep: true,
+            signal: controller.signal,
+            onProgress: ({ done }) => done === 1 && controller.abort(),
+        }),
+        { name: "AbortError" },
+    )
+    const isNew = (entry) => entry.modified > now.getTime() - 10_000
+    const readAgain = async () =>
+        Object.entries(await cached())
+            .filter(([file]) => file !== ours)
+            .map(([, entry]) => isNew(entry))
+    const stopped = await readAgain()
+    assert.equal(stopped.length, 6)
+    assert.ok(stopped.includes(true) && stopped.includes(false))
+    assert.equal((await cached())[ours].checked, true)
+    await scanBee2(ctx.paths, { deep: true })
+    assert.deepEqual(
+        await readAgain(),
+        ids.map(() => true),
+    )
 })
 
 test("leaving the hook: BEE2's setting goes back, and its packages move into BEE2's folder", async () => {

@@ -209,7 +209,39 @@ export async function createBackend(deps = {}) {
             await adoptOldInstalls(this).catch(() => {})
             await this.leaveHook().catch((err) => log.warn(err.message))
             send("packages:changed", {})
+            this.readPackagesAhead()
             return result
+        },
+
+        /**
+         * Reads BEE2's packages ahead of time, checking every file in the zips like "Check
+         * packages", into the scan cache: checks after it only read what changed since. Done
+         * when BeePM starts and when it learns where BEE2 is, in the background; a check made
+         * meanwhile waits for it (see core's scanPackages). Never throws.
+         */
+        reading: null, // { dir, controller, done }
+        readPackagesAhead() {
+            const dir = ctx.paths.bee2Dir
+            if (!dir) return Promise.resolve()
+            if (this.reading?.dir === dir) return this.reading.done
+            this.reading?.controller.abort() // BEE2's folder changed
+            const controller = new AbortController()
+            const started = Date.now()
+            const done = scanBee2(ctx.paths, { deep: true, signal: controller.signal })
+                .then((found) => {
+                    const seconds = ((Date.now() - started) / 1000).toFixed(1)
+                    log.info(`Read BEE2's ${found.length} packages ahead of time (${seconds} s)`)
+                })
+                .catch((err) => {
+                    if (err?.name !== "AbortError") {
+                        log.warn(`Couldn't read BEE2's packages ahead of time: ${err.message}`)
+                    }
+                })
+                .finally(() => {
+                    if (this.reading?.done === done) this.reading = null
+                })
+            this.reading = { dir, controller, done }
+            return done
         },
 
         /** BEE2 IDs whose own copy the user keeps: not offered BeePM's version again. */
@@ -406,6 +438,11 @@ export async function createBackend(deps = {}) {
         }
     }
     shared.disposers.push(async () => logWatch?.handle.close())
+    // Reading packages ahead of time stops where it is (what it read is kept)
+    shared.disposers.push(async () => {
+        shared.reading?.controller.abort()
+        await shared.reading?.done
+    })
 
     // In the background: looks at BEE2's packages when BEE2 opens (see updateWatcher.js)
     let bee2WasRunning = null
@@ -597,7 +634,8 @@ export async function createBackend(deps = {}) {
         },
         /**
          * One-time work after the window opens: watching installed.json, taking over installs
-         * from earlier BeePM versions, and undoing the hook of earlier 1.0 builds. Never throws.
+         * from earlier BeePM versions, undoing the hook of earlier 1.0 builds, then reading
+         * BEE2's packages ahead of time. Never throws.
          */
         startup: () => {
             log.info(`Registry: ${ctx.registry}`)
@@ -613,6 +651,7 @@ export async function createBackend(deps = {}) {
                 .catch(() => {})
                 .then(() => shared.leaveHook())
                 .catch((err) => log.warn(`Couldn't undo the hook yet: ${err.message}`))
+                .then(() => shared.readPackagesAhead())
         },
         /** Stops watching BEE2, and removes temporary files (prepared packages). */
         async dispose() {

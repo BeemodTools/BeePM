@@ -18,7 +18,8 @@
         "test": "npm test --workspaces --if-present",
         "dev:server": "npm run dev -w @beepm/server",
         "dev:app": "npm run dev -w @beepm/app",
-        "format": "prettier --write ."
+        "format": "prettier --write .",
+        "publish": "node app/scripts/release.js"
     },
     "devDependencies": {
         "prettier": "^3.6.2"

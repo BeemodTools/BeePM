@@ -94,9 +94,22 @@ test("a damaged file inside is found by checking every file (deep)", async () =>
     bytes.write("ZZZZ", bytes.indexOf("aaaa")) // a few bytes of its data changed
     await writeFile(file, bytes)
     assert.equal((await inspectBee2Zip(file)).problem, null) // its list of files is fine
-    assert.deepEqual((await inspectBee2Zip(file, { deep: true })).problem, {
-        kind: "damaged",
-        message: '"sound.txt" in it is damaged',
+    assert.deepEqual(await inspectBee2Zip(file, { deep: true }), {
+        infoText: INFO, // it still says which package it is
+        problem: { kind: "damaged", message: '"sound.txt" in it is damaged' },
+    })
+    // ...unless its info.txt is what's damaged
+    const badInfo = await zip("bad-info.bee_pack", { "info.txt": INFO })
+    const infoBytes = await readFile(badInfo)
+    infoBytes.write("XX", infoBytes.indexOf('"ID"') + 1)
+    await writeFile(badInfo, infoBytes)
+    assert.deepEqual(await inspectBee2Zip(badInfo, { deep: true }), {
+        infoText: null,
+        problem: { kind: "damaged", message: '"info.txt" in it is damaged' },
+    })
+    // A deep check can be stopped
+    await assert.rejects(inspectBee2Zip(file, { deep: true, signal: AbortSignal.abort() }), {
+        name: "AbortError",
     })
     // Compressed ones are checked too
     const deflated = await zip(

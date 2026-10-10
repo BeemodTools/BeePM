@@ -147,6 +147,15 @@ their login link. Pages send `frame-ancestors 'none'` and every form has a CSRF 
 asset and publish it the same way. It requires a linked GitHub identity that owns the
 repo, or is a public member of the org that owns it. Disallowed files are stripped. The
 file is copied into the bucket, so later changes to the GitHub release don't affect it.
+Installs still download it from the release, so they count in its downloads on GitHub: the
+client asks for the download `?from=github`, which redirects to the release's URL (kept in
+the version's `source`), checks the SHA-256 as always, and if GitHub's file is gone or isn't
+the same anymore takes the bucket's copy (`?from=beepm`). When files were stripped, GitHub's
+file isn't the one BeePM checked, so the import also keeps which files (`source.stripped`)
+and that file's checksum and size (`source.sha256`, `source.size`): the client checks GitHub's
+file against those, then strips the same files (core's `stripPack`), which leaves what BeePM
+checked (re-zipped, so not byte for byte the bucket's copy). Imports from before that only
+have the list (migration 008 takes it from their audit record) and download from the bucket.
 
 With `watch: true` the repo's new releases are published automatically from then on
 (`watch: false` stops it). Every `GITHUB_WATCH_MINUTES` (15) the server checks the latest
@@ -216,7 +225,7 @@ Public:
 | `GET /v1/packages/:scope/:name` | packument (below) |
 | `GET /v1/packages/:scope/:name/versions/:version/contents` | `{version, read, error, contents: [{kind, id, name, aliases, description, authors, icon}]}` in info.txt's order (`read` is false until the registry has read it; `icon` is a URL or null) |
 | `GET /v1/packages/:scope/:name/versions/:version/icons/:position` | One thing's icon (a PNG thumbnail), cached for good |
-| `GET /v1/packages/:scope/:name/versions/:version/download` | 302 to a presigned URL |
+| `GET /v1/packages/:scope/:name/versions/:version/download` | Counts a download; 302 to a presigned URL. `?from=github`: 302 to the GitHub release it came from instead (one with files stripped: only if its source has the release file's checksum). `?from=beepm`: the presigned URL, not counted (the retry after GitHub's file failed) |
 | `GET /v1/lookup?name=<name>` or `?beeId=<ID>` | `{packages: ["@scope/name", ...]}` |
 | `POST /v1/lookup {beeIds: [ID]}` (up to 1000) | `{packages: {<ID>: ["@scope/name", ...]}}`, only IDs on BeePM |
 | `GET /v1/users/:handle` | `{handle, displayName, avatarUrl, createdAt, packages: [summary]}` |
@@ -241,6 +250,10 @@ Packument:
   }
 }
 ```
+
+A version imported from GitHub has `"source": {"type": "github", "repo", "tag", "asset", "url"}`
+(`url`: the release file's). If files were stripped from it, also `"stripped"` (their names),
+`"sha256"` and `"size"` (the release file's, before stripping).
 
 Auth and account (`Authorization: Bearer bpm_...`):
 
@@ -299,7 +312,11 @@ banReason, handle}`, `GET /v1/admin/audit`, `POST /v1/admin/import-legacy`.
   4. `@beemod/*` dependencies only need a package with that BEE2 ID in BEE2's packages folder.
   5. A package the user added to BEE2 themselves with the same BEE2 ID (BEE2 refuses to load
      two) is listed in the plan, and moved to `replaced/` once BeePM's is in place.
-  6. Download to a temp file, verify the SHA-256, then move it to `packages/beepm/`.
+  6. Download to a temp file, verify the SHA-256, then move it to `packages/beepm/`. A
+     package from a GitHub release downloads from it (`?from=github`), and one BeePM stripped
+     files from is checked against the release file's checksum, then stripped the same way.
+     If that fails or the file doesn't match, the registry's copy (`?from=beepm`) is
+     downloaded instead.
   7. Record `{version, sha256, beeId, explicit, installedAt, file}` in `installed.json`.
 - **Uninstall** removes the file and any dependencies that nothing else needs.
   **Update** reinstalls to the highest version allowed by the original range.
@@ -307,7 +324,9 @@ banReason, handle}`, `GET /v1/admin/audit`, `POST /v1/admin/import-legacy`.
   .bee_pack/.zip files and folders with an info.txt, also in folders inside it (4 deep). It
   reads each package's ID and the IDs of the items it defines (both uppercased: BEE2 ignores
   case, and accepts IDs BeePM wouldn't publish), 4 at a time, and caches them by path, size
-  and modified time in `cache/packages.json`, so looking again only reads what changed.
+  and modified time in `cache/packages.json`, so looking again only reads what changed. Scans
+  using the cache take turns: one started during another waits, then reads what that one
+  found. A scan can be stopped; what it read until then stays cached.
 - **The BEE2 check** (`check.js`, `duplicates.js`): what BEE2 refuses to load together, the
   same package ID twice or an item ID in two packages, and the user's own packages (outside
   `packages/beepm`) that are on BeePM (`POST /v1/lookup`, all at once; one `?beeId=` at a time
@@ -318,7 +337,10 @@ banReason, handle}`, `GET /v1/admin/audit`, `POST /v1/admin/import-legacy`.
   read (Deflate64...), no `info.txt`, or `info.txt` only in folders inside the zip. "Check
   packages" also unpacks every stored and deflated file to compare it with its checksum
   (BEE2's own LZMA files aren't): about 8 s for 3.8 GB the first time, then only what changed
-  (the scan cache remembers it). Each one can be removed (Recycle Bin) or left; a zip with
+  (the scan cache remembers it). The desktop app does that reading ahead of time, in the
+  background, when it starts and when it learns where BEE2 is, so "Check packages" only reads
+  what changed since. A zip with a damaged file still has the ID its info.txt gives, so a BEE2
+  crash it causes is put down to it. Each one can be removed (Recycle Bin) or left; a zip with
   packages in folders (a GitHub "Download ZIP", packages zipped together) can be fixed: each
   folder with an `info.txt` (not inside another one) becomes a `.bee_pack` of its own next to
   it, checked to load before the zip is put away. These aren't asked about when BEE2 opens.

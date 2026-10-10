@@ -8,11 +8,12 @@
     "author": "Areng",
     "scripts": {
         "dev": "concurrently -k -s command-app -n vite,app \"vite\" \"electron .\"",
-        "build": "vite build && electron-builder && node scripts/verify-build.js",
+        "build": "vite build && electron-builder --config electron-builder.config.js && node scripts/verify-build.js",
         "start": "electron .",
         "format": "prettier --write .",
         "lint": "eslint . --fix",
-        "test": "node --test"
+        "test": "node --test",
+        "publish": "node scripts/release.js"
     },
     "dependencies": {
         "@beepm/core": "*",

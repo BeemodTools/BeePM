@@ -64,6 +64,7 @@ export async function importLegacy(deps, { registryUrl }) {
                     repo: info.github ? `${info.github.owner}/${info.github.repo}` : null,
                     tag: info.github?.tag ?? null,
                     asset: decodeURIComponent(info.downloadUrl.split("/").pop()),
+                    url: info.downloadUrl,
                     legacy: true,
                 },
                 publishedAt: info.publishedAt ?? null,

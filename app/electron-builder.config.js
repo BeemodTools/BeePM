@@ -1,7 +1,10 @@
 /**
- * electron-builder's settings (npm run build). The app and installer icon is build/icon.ico.
- * Electron's version is read from the installed package: in this npm workspace it's in the
- * repo's root node_modules, where electron-builder doesn't look for it.
+ * electron-builder's settings (npm run build passes --config). The app and installer icon is
+ * build/icon.ico. Electron's version is read from the installed package: in this npm workspace
+ * it's in the repo's root node_modules, where electron-builder doesn't look for it.
+ * Not named electron-builder.js: Windows' cmd.exe runs a file in the folder it's in before a
+ * program of the same name, so `electron-builder` in this folder opened that file (in whatever
+ * .js files open with) instead of running electron-builder.
  */
 import { createRequire } from "node:module"
 

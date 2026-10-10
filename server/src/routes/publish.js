@@ -251,6 +251,7 @@ export default async function publishRoutes(app) {
                             repo: repoInfo.full_name,
                             tag: release.tag_name,
                             asset: chosen.name,
+                            url: chosen.browser_download_url,
                         },
                     },
                 )

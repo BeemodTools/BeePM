@@ -106,7 +106,10 @@ export function createApi({
         lookupBeeIds: (beeIds) => request("POST", "/v1/lookup", { beeIds }),
         user: (handle) =>
             request("GET", `/v1/users/${encodeURIComponent(handle.replace(/^@/, ""))}`),
-        downloadUrl: (name, version) => `${base}${ver(name, version)}/download`,
+        // from: "github" (a version from a GitHub release downloads from it) or "beepm" (the
+        // registry's own copy, when that failed)
+        downloadUrl: (name, version, { from } = {}) =>
+            `${base}${ver(name, version)}/download${from ? `?from=${from}` : ""}`,
 
         startLogin: ({ clientName, client }) =>
             request("POST", "/v1/auth/sessions", { clientName, client }),

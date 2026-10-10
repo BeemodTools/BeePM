@@ -918,3 +918,36 @@ test("settings: running in the background, and updates not to ask about again", 
     again.backend.watcher.stop()
     backend.watcher.stop()
 })
+
+test("BEE2's packages are read ahead of time: when BeePM learns where BEE2 is, and when it starts", async () => {
+    const home = path.join(dir, "ahead-home")
+    const folder = await fakeBee2(path.join(dir, "ahead-bee2", "BEE2"))
+    const zip = (id) => zipBytes({ "info.txt": `"ID" "${id}"\n"Name" "Ahead"\n` })
+    const first = path.join(folder, "packages", "first.bee_pack")
+    await writeFile(first, await zip("FIRST"))
+    const cached = async ({ ctx }, file) => {
+        const cacheFile = path.join(ctx.paths.cache, "packages.json")
+        const saved = JSON.parse(await readFile(cacheFile, "utf8").catch(() => "{}"))
+        return saved.packages?.[file] ?? null
+    }
+
+    // Read in the background once BEE2's folder is chosen, every file in it checked
+    const one = await startBackend({ home })
+    assert.equal((await one.backend.invoke("bee2:set-folder", folder)).ok, true)
+    const deadline = Date.now() + 15000
+    while (!(await cached(one.backend, first))?.checked && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 50))
+    }
+    assert.equal((await cached(one.backend, first))?.id, "FIRST")
+    assert.equal((await cached(one.backend, first)).checked, true)
+    await one.backend.dispose()
+
+    // One added while BeePM was closed is read when it starts again
+    const added = path.join(folder, "packages", "added.bee_pack")
+    await writeFile(added, await zip("ADDED"))
+    const two = await startBackend({ home })
+    await two.backend.startup()
+    assert.equal((await cached(two.backend, added))?.id, "ADDED")
+    assert.equal((await cached(two.backend, added)).checked, true)
+    await two.backend.dispose()
+})

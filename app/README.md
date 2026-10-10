@@ -43,7 +43,7 @@ replace the installed app's "start with Windows" entry).
 
 ## Packaging
 
-`npm run build` runs `vite build`, then electron-builder (settings in `electron-builder.js`),
+`npm run build` runs `vite build`, then electron-builder (settings in `electron-builder.config.js`),
 and leaves the installer in `release/` (`BeePM-Setup-<version>.exe`, not code-signed). Last,
 `scripts/verify-build.js` checks the packed app against its sources, file by file: a file that
 changes while electron-builder packs it shifts every file after it, and the installed BeePM
@@ -68,18 +68,23 @@ uninstaller. electron-builder finds both by their names.
 ## Releasing (BeePM updates itself)
 
 The installed app looks for new versions in the GitHub releases of BeemodTools/BeePM
-(`backend/appUpdater.js` with electron-updater; `publish` in `electron-builder.js`): soon after
-it starts and every 6 hours. It downloads a new version in the background, then asks in the
-corner whether to restart now; otherwise it installs when BeePM quits. To release:
+(`backend/appUpdater.js` with electron-updater; `publish` in `electron-builder.config.js`):
+soon after it starts and every 6 hours. It downloads a new version in the background, then asks
+in the corner whether to restart now; otherwise it installs when BeePM quits.
 
-1. Raise `version` in `package.json` (e.g. 1.0.0 to 1.0.1): the updater only takes higher
-   versions.
-2. `npm run build`. Besides the installer, `release/` gets `latest.yml` (the version, the
-   installer's name, size and SHA-512) and the installer's `.blockmap` (so updates only download
-   what changed).
-3. Make a GitHub release on BeemodTools/BeePM tagged `v<version>` (not a draft or pre-release)
-   with those three files: `BeePM-Setup-<version>.exe`, its `.blockmap` and `latest.yml`. Or
-   let electron-builder do it: set `GH_TOKEN` (a token that can write the repo's releases) in
-   your own terminal and run `npx electron-builder --publish always` after `vite build`.
+To release, commit everything, then run `npm run publish` (from the repo or `app/`; it needs
+`gh`, logged in). It raises the version (a patch; `npm run publish -- minor`, `-- major` or
+`-- 1.2.0` for others: the updater only takes higher versions), builds the installer, commits
+"BeePM <version>" and pushes it, and makes the GitHub release `v<version>` at that commit with
+the installer, its `.blockmap` (updates only download what changed) and `latest.yml` (the
+version, the installer's name, size and SHA-512). The release notes are the commits since the
+last release, or `--notes "..."`. Giving the version it's at already releases that one as it is
+(if it isn't out). If the build fails, the version goes back and nothing is released.
+`npm run publish -- --dry-run` only checks and says what it would do (`scripts/release.js`).
+
+By hand: raise `version` in `package.json`, `npm run build`, then make a GitHub release on
+BeemodTools/BeePM tagged `v<version>` at the release's commit (not `main`, the repo's default
+branch: `--target` with `gh release create`), not a draft or pre-release, with
+`BeePM-Setup-<version>.exe`, its `.blockmap` and `latest.yml` from `release/`.
 
 `BEEPM_NO_UPDATE=1` turns the updater off in the installed app.

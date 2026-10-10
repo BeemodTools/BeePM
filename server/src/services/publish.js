@@ -186,15 +186,17 @@ export async function checkPublishable(db, user, manifest, beeId) {
  */
 export async function publishFile(deps, options) {
     const { db, config, storage, tmp } = deps
-    const { user, source, stagingKey = null, strip = false } = options
+    const { user, stagingKey = null, strip = false } = options
     let { filePath } = options
     let strippedFiles = []
 
     let checked
+    let original = null // the file as it came, when files are stripped from it
     try {
         checked = await checkPack(filePath, { defaultScope: user.handle, allowDisallowed: strip })
         if (strip && checked.disallowed.length) {
             strippedFiles = checked.disallowed
+            original = { sha256: await hashFile(filePath), size: (await stat(filePath)).size }
             const cleaned = await tmp.file(".bee_pack")
             await stripPack(filePath, cleaned, strippedFiles)
             filePath = cleaned
@@ -204,6 +206,12 @@ export async function publishFile(deps, options) {
         throw packErrorToApi(err)
     }
     const { manifest, beeId } = checked
+    // Files stripped: which ones, and the checksum and size of the file as it came (a GitHub
+    // release's), so clients can download that file, check it and strip the same files (see the
+    // download route)
+    const source = strippedFiles.length
+        ? { ...options.source, stripped: strippedFiles, ...original }
+        : options.source
     const size = (await stat(filePath)).size
     const sha256 = await hashFile(filePath)
     if (size > config.maxUploadBytes && !options.allowLegacy) {

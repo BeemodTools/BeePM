@@ -15,14 +15,15 @@ const isInside = (file, folder) => key(file).startsWith(key(folder) + path.sep)
 
 /**
  * The packages in BEE2's packages folder (skipBeepm: not the ones in BeePM's folder there),
- * using the scan cache for files that didn't change. deep: every file in the zips is checked
- * (see scanPackages). Needs BEE2's folder.
+ * using the scan cache for files that didn't change. deep: every file in the zips is checked;
+ * signal stops it (see scanPackages). Needs BEE2's folder.
  */
-export function scanBee2(paths, { skipBeepm = false, deep = false } = {}) {
+export function scanBee2(paths, { skipBeepm = false, deep = false, signal } = {}) {
     return scanPackages(bee2PackagesDir(paths.bee2Dir), {
         skip: skipBeepm ? [paths.packages] : [],
         cacheFile: path.join(paths.cache, "packages.json"),
         deep,
+        signal,
     })
 }
 
